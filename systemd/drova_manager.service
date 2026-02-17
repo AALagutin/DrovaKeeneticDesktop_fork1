@@ -1,0 +1,15 @@
+[Unit]
+Description=Drova Desktop Manager (multi-PC)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=root
+EnvironmentFile=/opt/drova-desktop/.env
+WorkingDirectory=/opt/drova-desktop
+ExecStart=/root/.local/bin/poetry run drova_poll
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
