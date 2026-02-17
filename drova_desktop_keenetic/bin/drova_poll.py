@@ -1,12 +1,12 @@
 import asyncio
-import os
 
-from drova_desktop_keenetic.common.contants import DROVA_SOCKET_LISTEN
-from drova_desktop_keenetic.common.drova_poll import DrovaPoll
+from drova_desktop_keenetic.common.drova_poll import DrovaManager
+from drova_desktop_keenetic.common.host_config import load_config
 
 
 def run_async_main():
-    asyncio.run(DrovaPoll().serve(True))
+    config = load_config()
+    asyncio.run(DrovaManager(config).run())
 
 
 if __name__ == "__main__":

@@ -1,118 +1,156 @@
 import asyncio
 import logging
-import os
-from logging import DEBUG, basicConfig
 
 from asyncssh import connect as connect_ssh
 from asyncssh.misc import ChannelOpenError
+from expiringdict import ExpiringDict  # type: ignore
 
 from drova_desktop_keenetic.common.after_disconnect import AfterDisconnect
 from drova_desktop_keenetic.common.before_connect import BeforeConnect
-from drova_desktop_keenetic.common.contants import (
-    WINDOWS_HOST,
-    WINDOWS_LOGIN,
-    WINDOWS_PASSWORD,
-)
-from drova_desktop_keenetic.common.drova import get_new_session
+from drova_desktop_keenetic.common.drova import DrovaApiClient
 from drova_desktop_keenetic.common.helpers import (
     CheckDesktop,
     RebootRequired,
     WaitFinishOrAbort,
     WaitNewDesktopSession,
 )
+from drova_desktop_keenetic.common.host_config import AppConfig, HostConfig
 
 logger = logging.getLogger(__name__)
 
 
-class DrovaPoll:
+class DrovaPollWorker:
+    """Manages the session lifecycle for a single Windows PC."""
+
     def __init__(
         self,
-        windows_host: str = os.environ[WINDOWS_HOST],
-        windows_login: str = os.environ[WINDOWS_LOGIN],
-        windows_password: str = os.environ[WINDOWS_PASSWORD],
+        host_config: HostConfig,
+        api_client: DrovaApiClient,
+        poll_interval_idle: float = 5.0,
+        poll_interval_active: float = 3.0,
     ):
-        self.windows_host = windows_host
-        self.windows_login = windows_login
-        self.windows_password = windows_password
+        self.host_config = host_config
+        self.api_client = api_client
+        self.poll_interval_idle = poll_interval_idle
+        self.poll_interval_active = poll_interval_active
+        self._stop_event = asyncio.Event()
+        self.logger = logger.getChild(f"Worker[{host_config.name}]")
 
-        self.stop_future = asyncio.get_event_loop().create_future()
+    def _connect_ssh(self):
+        return connect_ssh(
+            host=self.host_config.host,
+            username=self.host_config.login,
+            password=self.host_config.password,
+            known_hosts=None,
+            encoding="windows-1251",
+        )
+
+    async def _handle_session(self, conn, token_cache: ExpiringDict) -> None:
+        """Handle one complete session cycle: check -> wait -> prepare -> wait_finish -> cleanup."""
+        check = CheckDesktop(conn, self.api_client, token_cache)
+        is_desktop_session = await check.run()
+
+        if not is_desktop_session:
+            wait_new = WaitNewDesktopSession(conn, self.api_client, token_cache, poll_interval=self.poll_interval_idle)
+            is_desktop_session = await wait_new.run()
+
+        if is_desktop_session:
+            self.logger.info("Desktop session detected - applying patches")
+            before_connect = BeforeConnect(conn, self.host_config)
+            patches_ok = await before_connect.run()
+            if not patches_ok:
+                self.logger.warning("Some patches failed, but continuing with session")
+
+            self.logger.info("Waiting for session to finish")
+            wait_finish = WaitFinishOrAbort(
+                conn, self.api_client, token_cache, poll_interval=self.poll_interval_active
+            )
+            await wait_finish.run()
+
+            self.logger.info("Session finished - exiting shadow defender and rebooting")
+            after = AfterDisconnect(conn, self.host_config)
+            await after.run()
 
     async def polling(self) -> None:
-        while not self.stop_future.done():
+        self.logger.info("Started polling")
+        while not self._stop_event.is_set():
             try:
-                async with connect_ssh(
-                    host=self.windows_host,
-                    username=self.windows_login,
-                    password=self.windows_password,
-                    known_hosts=None,
-                    encoding="windows-1251",
-                ) as conn:
+                async with self._connect_ssh() as conn:
                     try:
-                        # check reboot before close session
-                        check = CheckDesktop(conn)
-                        is_desktop_session = await check.run()
-
-                        if not is_desktop_session:
-                            wait_new_desktop_session = WaitNewDesktopSession(conn)
-                            is_desktop_session = await wait_new_desktop_session.run()
-
-                        if is_desktop_session:
-                            logger.info("Waited desktop - clear this")
-                            before_connect = BeforeConnect(conn)
-                            await before_connect.run()
-                            logger.info("Wait finish session")
-                            wait_finish_session = WaitFinishOrAbort(conn)
-                            await wait_finish_session.run()
-
-                            logger.info("Clear shadow defender and restart")
-                            after_disconnect_client = AfterDisconnect(conn)
-                            await after_disconnect_client.run()
+                        token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
+                        await self._handle_session(conn, token_cache)
                     except RebootRequired:
-                        logger.info("Reboot required received!")
-                        after_disconnect_client = AfterDisconnect(conn)
-                        await after_disconnect_client.run()
-
+                        self.logger.info("Reboot required")
+                        after = AfterDisconnect(conn, self.host_config)
+                        await after.run()
             except (ChannelOpenError, OSError):
-                logger.info("Fail connect to windows - gaming or unavailable(reboot)")
-            except:
-                logger.exception("We have error")
+                self.logger.debug("Cannot connect - PC unavailable or rebooting")
+            except Exception:
+                self.logger.exception("Unexpected error in polling cycle")
 
             await asyncio.sleep(1)
 
-    async def stop(self) -> None:
-        self.stop_future.set_result(True)
+    async def run(self) -> None:
+        """Entry point: check for existing session, then start polling."""
+        await self._check_existing_session()
+        await self.polling()
 
-    async def _waitif_session_desktop_exists(self) -> None:
+    async def _check_existing_session(self) -> None:
+        """On startup, check if a session is already active and handle it."""
         try:
-            async with connect_ssh(
-                host=self.windows_host,
-                username=self.windows_login,
-                password=self.windows_password,
-                known_hosts=None,
-                encoding="windows-1251",
-            ) as conn:
+            async with self._connect_ssh() as conn:
                 try:
-                    check_desktop = CheckDesktop(conn)
-                    is_desktop = await check_desktop.run()
+                    token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
+                    check = CheckDesktop(conn, self.api_client, token_cache)
+                    is_desktop = await check.run()
                     if is_desktop:
-                        logger.info("Wait finish session")
-                        wait_finish_session = WaitFinishOrAbort(conn)
-                        await wait_finish_session.run()
+                        self.logger.info("Existing session found - waiting for it to finish")
+                        wait_finish = WaitFinishOrAbort(
+                            conn, self.api_client, token_cache, poll_interval=self.poll_interval_active
+                        )
+                        await wait_finish.run()
 
-                        logger.info("Clear shadow defender and restart")
-                        after_disconnect_client = AfterDisconnect(conn)
-                        await after_disconnect_client.run()
+                        self.logger.info("Session finished - cleanup")
+                        after = AfterDisconnect(conn, self.host_config)
+                        await after.run()
                 except RebootRequired:
-                    logger.info("Reboot required received!")
-                    after_disconnect_client = AfterDisconnect(conn)
-                    await after_disconnect_client.run()
-        except:
-            logger.exception("We have error")
+                    self.logger.info("Reboot required on startup check")
+                    after = AfterDisconnect(conn, self.host_config)
+                    await after.run()
+        except Exception:
+            self.logger.exception("Error checking existing session on startup")
 
-    async def serve(self, wait_forever=False):
-        await self._waitif_session_desktop_exists()
+    def stop(self):
+        self._stop_event.set()
 
-        if wait_forever:
-            await self.polling()
-        else:
-            asyncio.create_task(self.polling())
+
+class DrovaManager:
+    """Manages multiple DrovaPollWorker instances in a single process."""
+
+    def __init__(self, config: AppConfig):
+        self.config = config
+        self.api_client = DrovaApiClient()
+        self.workers: list[DrovaPollWorker] = []
+
+    async def run(self) -> None:
+        logger.info(f"Starting DrovaManager with {len(self.config.hosts)} host(s)")
+
+        for host_config in self.config.hosts:
+            worker = DrovaPollWorker(
+                host_config=host_config,
+                api_client=self.api_client,
+                poll_interval_idle=self.config.poll_interval_idle,
+                poll_interval_active=self.config.poll_interval_active,
+            )
+            self.workers.append(worker)
+
+        try:
+            tasks = [asyncio.create_task(w.run(), name=w.host_config.name) for w in self.workers]
+            await asyncio.gather(*tasks)
+        finally:
+            await self.api_client.close()
+
+    async def stop(self) -> None:
+        for worker in self.workers:
+            worker.stop()
+        await self.api_client.close()

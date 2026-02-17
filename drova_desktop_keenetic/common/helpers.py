@@ -1,6 +1,5 @@
 import logging
 from asyncio import sleep
-from typing import Dict
 
 from asyncssh import SSHClientConnection
 from expiringdict import ExpiringDict  # type: ignore
@@ -8,10 +7,9 @@ from expiringdict import ExpiringDict  # type: ignore
 from drova_desktop_keenetic.common.commands import NotFoundAuthCode, RegQueryEsme
 from drova_desktop_keenetic.common.drova import (
     UUID_DESKTOP,
+    DrovaApiClient,
     SessionsEntity,
     StatusEnum,
-    get_latest_session,
-    get_product_info,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,16 +21,22 @@ class RebootRequired(RuntimeError): ...
 class BaseDrovaMerchantWindows:
     logger = logger.getChild("BaseDrovaMerchantWindows")
 
-    def __init__(self, client: SSHClientConnection):
+    def __init__(
+        self,
+        client: SSHClientConnection,
+        api_client: DrovaApiClient | None = None,
+        token_cache: ExpiringDict | None = None,
+    ):
         self.client = client
-        self.dict_store = ExpiringDict(max_len=100, max_age_seconds=60)
+        self.api_client = api_client or DrovaApiClient()
+        self.dict_store = token_cache if token_cache is not None else ExpiringDict(max_len=100, max_age_seconds=60)
 
-    async def get_auth_token(self):
+    async def get_auth_token(self) -> str:
         if "auth_token" not in self.dict_store:
             await self.refresh_actual_tokens()
         return self.dict_store["auth_token"]
 
-    async def get_server_id(self):
+    async def get_server_id(self) -> str:
         if "server_id" not in self.dict_store:
             await self.refresh_actual_tokens()
         return self.dict_store["server_id"]
@@ -53,12 +57,11 @@ class BaseDrovaMerchantWindows:
         return self.dict_store["server_id"], self.dict_store["auth_token"]
 
     async def check_desktop_session(self, session: SessionsEntity) -> bool:
-        self.logger.info(f"Check session product_id =  {session.product_id}")
+        self.logger.info(f"Check session product_id = {session.product_id}")
         if session.product_id == UUID_DESKTOP:
             return True
-        # check alloed only on desktop
-        product_info = await get_product_info(session.product_id, auth_token=await self.get_auth_token())
-        self.logger.info(f"product_info : {product_info}")
+        product_info = await self.api_client.get_product_info(session.product_id, auth_token=await self.get_auth_token())
+        self.logger.info(f"product_info: {product_info}")
         return product_info.use_default_desktop
 
 
@@ -66,42 +69,57 @@ class CheckDesktop(BaseDrovaMerchantWindows):
     logger = logger.getChild("CheckDesktop")
 
     async def run(self) -> bool:
-
-        self.logger.info(f"Start read latest session with token {await self.get_auth_token()}")
-        session = await get_latest_session(await self.get_server_id(), await self.get_auth_token())
-        self.logger.debug(f"Session : {session}")
+        self.logger.info("Checking for active desktop session")
+        session = await self.api_client.get_latest_session(await self.get_server_id(), await self.get_auth_token())
+        self.logger.debug(f"Session: {session}")
 
         if not session:
             return False
 
         if session.status in (StatusEnum.HANDSHAKE, StatusEnum.ACTIVE, StatusEnum.NEW):
             return await self.check_desktop_session(session)
-        # by default, if session not is started (aborted/finished) return false
         return False
 
 
 class WaitFinishOrAbort(BaseDrovaMerchantWindows):
-    logger = logger.getChild("CheckDesktop")
+    logger = logger.getChild("WaitFinishOrAbort")
+
+    def __init__(
+        self,
+        client: SSHClientConnection,
+        api_client: DrovaApiClient | None = None,
+        token_cache: ExpiringDict | None = None,
+        poll_interval: float = 3.0,
+    ):
+        super().__init__(client, api_client, token_cache)
+        self.poll_interval = poll_interval
 
     async def run(self) -> bool:
         while True:
-
-            session = await get_latest_session(await self.get_server_id(), await self.get_auth_token())
+            session = await self.api_client.get_latest_session(await self.get_server_id(), await self.get_auth_token())
             if not session:
                 return False
-            # wait close current session
             if session.status in (StatusEnum.ABORTED, StatusEnum.FINISHED):
                 return True
-            await sleep(1)
+            await sleep(self.poll_interval)
 
 
 class WaitNewDesktopSession(BaseDrovaMerchantWindows):
     logger = logger.getChild("WaitNewDesktopSession")
 
+    def __init__(
+        self,
+        client: SSHClientConnection,
+        api_client: DrovaApiClient | None = None,
+        token_cache: ExpiringDict | None = None,
+        poll_interval: float = 5.0,
+    ):
+        super().__init__(client, api_client, token_cache)
+        self.poll_interval = poll_interval
+
     async def run(self) -> bool:
         while True:
-
-            session = await get_latest_session(await self.get_server_id(), await self.get_auth_token())
+            session = await self.api_client.get_latest_session(await self.get_server_id(), await self.get_auth_token())
             if not session:
                 return False
 
@@ -111,4 +129,4 @@ class WaitNewDesktopSession(BaseDrovaMerchantWindows):
                 StatusEnum.ACTIVE,
             ):
                 return await self.check_desktop_session(session)
-            await sleep(1)
+            await sleep(self.poll_interval)

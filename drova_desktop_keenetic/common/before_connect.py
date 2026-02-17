@@ -1,14 +1,10 @@
 import logging
-import os
 from asyncio import sleep
 
 from asyncssh import SSHClientConnection
 
 from drova_desktop_keenetic.common.commands import ShadowDefenderCLI, TaskKill
-from drova_desktop_keenetic.common.contants import (
-    SHADOW_DEFENDER_DRIVES,
-    SHADOW_DEFENDER_PASSWORD,
-)
+from drova_desktop_keenetic.common.host_config import HostConfig
 from drova_desktop_keenetic.common.patch import ALL_PATCHES
 
 logger = logging.getLogger(__name__)
@@ -17,39 +13,40 @@ logger = logging.getLogger(__name__)
 class BeforeConnect:
     logger = logger.getChild("BeforeConnect")
 
-    def __init__(self, client: SSHClientConnection):
+    def __init__(self, client: SSHClientConnection, host_config: HostConfig):
         self.client = client
+        self.host_config = host_config
 
     async def run(self) -> bool:
-
         self.logger.info("open sftp")
-        try:
-            async with self.client.start_sftp_client() as sftp:
+        async with self.client.start_sftp_client() as sftp:
 
-                self.logger.info(f"start shadow")
-                # start shadow mode
-                await self.client.run(
-                    str(
-                        ShadowDefenderCLI(
-                            password=os.environ[SHADOW_DEFENDER_PASSWORD],
-                            actions=["enter"],
-                            drives=os.environ[SHADOW_DEFENDER_DRIVES],
-                        )
+            self.logger.info("start shadow")
+            await self.client.run(
+                str(
+                    ShadowDefenderCLI(
+                        password=self.host_config.shadow_defender_password,
+                        actions=["enter"],
+                        drives=self.host_config.shadow_defender_drives,
                     )
                 )
-                await sleep(2)
+            )
+            await sleep(2)
 
-                for path in ALL_PATCHES:
-                    self.logger.info(f"prepare {path.NAME}")
-                    if path.TASKKILL_IMAGE:
-                        await self.client.run(str(TaskKill(image=path.TASKKILL_IMAGE)))
-                    await sleep(0.2)
-                    pather = path(self.client, sftp)
-                    try:
-                        await pather.patch()
-                    except Exception:
-                        logger.exception(f"Problem with patch apply - {path.NAME} skipped!")
+            failed_patches: list[str] = []
+            for patch_cls in ALL_PATCHES:
+                self.logger.info(f"prepare {patch_cls.NAME}")
+                if patch_cls.TASKKILL_IMAGE:
+                    await self.client.run(str(TaskKill(image=patch_cls.TASKKILL_IMAGE)))
+                await sleep(0.2)
+                patcher = patch_cls(self.client, sftp)
+                try:
+                    await patcher.patch()
+                except Exception:
+                    self.logger.exception(f"Patch failed: {patch_cls.NAME}")
+                    failed_patches.append(patch_cls.NAME)
 
-        except Exception:
-            logger.exception("We have problem")
+        if failed_patches:
+            self.logger.error(f"Failed patches: {failed_patches}")
+            return False
         return True

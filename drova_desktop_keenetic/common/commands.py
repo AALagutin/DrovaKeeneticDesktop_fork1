@@ -35,8 +35,8 @@ class PsExec(ICommandBuilder):
     interactive: int | None = field(kw_only=True, default=1)
     accepteula: bool = True
     detach: bool = True
-    user: str = os.environ[WINDOWS_LOGIN]
-    password: str = os.environ[WINDOWS_PASSWORD]
+    user: str = field(default_factory=lambda: os.environ.get(WINDOWS_LOGIN, ""))
+    password: str = field(default_factory=lambda: os.environ.get(WINDOWS_PASSWORD, ""))
 
     def _build_command(self) -> str:
         command = ["psexec"]
@@ -123,7 +123,7 @@ class ShadowDefenderCLI(ICommandBuilder):
                     command += ["/reboot"]
                 case "commit":
                     assert self.drives
-                    command += [f'/commit:"{drive}:\\"' for drive in self.drives.split("")]
+                    command += [f'/commit:"{drive}:\\"' for drive in self.drives]
                 case "list":
                     command += [f"/list"]
         command += ["/now"]

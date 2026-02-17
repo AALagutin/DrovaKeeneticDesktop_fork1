@@ -1,12 +1,14 @@
+import logging
 from datetime import datetime
 from enum import StrEnum
 from ipaddress import IPv4Address
 from pathlib import PureWindowsPath
-from urllib.parse import urlencode, urlparse, urlunparse
 from uuid import UUID
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict
+
+logger = logging.getLogger(__name__)
 
 URL_SESSIONS = "https://services.drova.io/session-manager/sessions?"
 URL_PRODUCT = "https://services.drova.io/server-manager/product/get/{product_id}"
@@ -51,31 +53,39 @@ class ProductInfo(BaseModel):
     title: str
 
 
-async def get_latest_session(server_id: str, auth_token: str) -> SessionsEntity | None:
-    async with aiohttp.ClientSession() as session:
+class DrovaApiClient:
+    """Shared HTTP client for Drova API with connection pooling and timeouts.
+
+    A single instance should be shared across all workers to reuse TCP connections.
+    """
+
+    def __init__(self, timeout: int = 15):
+        self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._session: aiohttp.ClientSession | None = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self._timeout)
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+    async def get_latest_session(self, server_id: str, auth_token: str) -> SessionsEntity | None:
+        session = await self._get_session()
         async with session.get(
             URL_SESSIONS, data={"serveri_id": server_id}, headers={"X-Auth-Token": auth_token}
         ) as resp:
-            sessions = SessionsResponse(**await resp.json())
-            if not sessions.sessions:
+            data = SessionsResponse(**await resp.json())
+            if not data.sessions:
                 return None
-            return sessions.sessions[0]
+            return data.sessions[0]
 
-
-async def get_new_session(server_id: str, auth_token: str) -> SessionsEntity | None:
-    query_params = f"state={StatusEnum.NEW.value}&state={StatusEnum.HANDSHAKE.value}"
-    async with aiohttp.ClientSession() as session:
+    async def get_product_info(self, product_id: UUID, auth_token: str) -> ProductInfo:
+        session = await self._get_session()
         async with session.get(
-            URL_SESSIONS + query_params, data={"serveri_id": server_id}, headers={"X-Auth-Token": auth_token}
+            URL_PRODUCT.format(product_id=product_id), headers={"X-Auth-Token": auth_token}
         ) as resp:
-            sessions = SessionsResponse(**await resp.json())
-            if not sessions.sessions:
-                return None
-            return sessions.sessions[0]
-
-
-async def get_product_info(product_id: UUID, auth_token: str):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(URL_PRODUCT.format(product_id=product_id), headers={"X-Auth-Token": auth_token}) as resp:
-            product_info = ProductInfo(**await resp.json())
-            return product_info
+            return ProductInfo(**await resp.json())

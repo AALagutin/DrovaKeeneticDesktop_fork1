@@ -52,7 +52,7 @@ async def test_socket_full(prepare_server, mocker):
     async def _(self) -> bool:
         return True
 
-    drova_socket = DrovaSocket(7990, windows_host="127.0.0.1")
+    drova_socket = DrovaSocket(7990, windows_host="127.0.0.1", windows_login="test", windows_password="test")
     await drova_socket.serve()
     logger.info("Drova is served")
     await asyncio.sleep(0.1)
@@ -88,7 +88,7 @@ async def test_socket_server_run_as_desktop(prepare_server, mocker):
         await asyncio.sleep(0.5)
         return True
 
-    drova_socket = DrovaSocket(7990, windows_host="127.0.0.1")
+    drova_socket = DrovaSocket(7990, windows_host="127.0.0.1", windows_login="test", windows_password="test")
     await drova_socket.serve()
 
     await drova_socket.stop()
