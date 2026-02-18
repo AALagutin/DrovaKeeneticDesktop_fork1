@@ -78,6 +78,12 @@ class DrovaApiClient:
         async with session.get(
             URL_SESSIONS, data={"serveri_id": server_id}, headers={"X-Auth-Token": auth_token}
         ) as resp:
+            if resp.status == 401:
+                logger.debug(f"Unauthorized for server {server_id} (expired token)")
+                return None
+            if resp.status != 200:
+                logger.warning(f"Unexpected status {resp.status} for server {server_id}")
+                return None
             data = SessionsResponse(**await resp.json())
             if not data.sessions:
                 return None
@@ -88,4 +94,5 @@ class DrovaApiClient:
         async with session.get(
             URL_PRODUCT.format(product_id=product_id), headers={"X-Auth-Token": auth_token}
         ) as resp:
+            resp.raise_for_status()
             return ProductInfo(**await resp.json())
