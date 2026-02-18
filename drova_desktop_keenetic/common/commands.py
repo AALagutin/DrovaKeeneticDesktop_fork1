@@ -67,7 +67,7 @@ class PsExec(ICommandBuilder):
         r = re.compile(r"(?P<executable>\S*) exited on (?P<hostname>\S*) with error code (?P<exit_code>\d+)\.")
 
         if match := r.search(last_line.decode("windows-1251")):
-            return int(match.group("exit_code") + "0")
+            return int(match.group("exit_code"))
 
         raise PsExecNotFoundExecutable()
 
@@ -176,7 +176,7 @@ class RegAdd(ICommandBuilder):
     value_name: str | None = None
     value_type: RegValueType | None = None
     value: str | int | bytes | None = None
-    force = True
+    force: bool = True
 
     def _build_command(self):
         args = ["reg", "add", quote(self.reg_path)]

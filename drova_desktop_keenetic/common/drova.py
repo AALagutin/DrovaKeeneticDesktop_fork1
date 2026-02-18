@@ -85,7 +85,7 @@ class DrovaApiClient:
     async def get_latest_session(self, server_id: str, auth_token: str) -> SessionsEntity | None:
         session = await self._get_session()
         async with session.get(
-            URL_SESSIONS, data={"serveri_id": server_id}, headers={"X-Auth-Token": auth_token}
+            URL_SESSIONS, params={"server_id": server_id}, headers={"X-Auth-Token": auth_token}
         ) as resp:
             if resp.status == 401:
                 logger.debug(f"Unauthorized for server {server_id} (expired token)")

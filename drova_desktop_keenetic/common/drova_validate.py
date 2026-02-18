@@ -16,12 +16,12 @@ from drova_desktop_keenetic.common.contants import (
 
 
 def validate_env():
-    assert not hasattr(os.environ, DROVA_SOCKET_LISTEN), "Please set DROVA_SOCKET_LISTEN in .env file"
-    assert not hasattr(os.environ, WINDOWS_HOST), "Please set WINDOWS_HOST in .env file"
-    assert not hasattr(os.environ, WINDOWS_LOGIN), "Please set WINDOWS_LOGIN in .env file"
+    assert DROVA_SOCKET_LISTEN in os.environ, "Please set DROVA_SOCKET_LISTEN in .env file"
+    assert WINDOWS_HOST in os.environ, "Please set WINDOWS_HOST in .env file"
+    assert WINDOWS_LOGIN in os.environ, "Please set WINDOWS_LOGIN in .env file"
 
-    assert not hasattr(os.environ, SHADOW_DEFENDER_PASSWORD), "Please set SHADOW_DEFENDER_PASSWORD in .env file"
-    assert not hasattr(os.environ, SHADOW_DEFENDER_DRIVES), "Please set SHADOW_DEFENDER_DRIVES in .env file"
+    assert SHADOW_DEFENDER_PASSWORD in os.environ, "Please set SHADOW_DEFENDER_PASSWORD in .env file"
+    assert SHADOW_DEFENDER_DRIVES in os.environ, "Please set SHADOW_DEFENDER_DRIVES in .env file"
 
 
 async def validate_creds():
@@ -33,7 +33,7 @@ async def validate_creds():
         encoding="windows-1251",
     ) as conn:
         print("Windows access complete!")
-        result_defender = await conn.run(str(ShadowDefenderCLI(os.environ[SHADOW_DEFENDER_PASSWORD], "list")))
+        result_defender = await conn.run(str(ShadowDefenderCLI(os.environ[SHADOW_DEFENDER_PASSWORD], ["list"])))
         assert "not correct" not in result_defender.stdout, "Bad Shadow Defender password!"
         print("Shadow Defender list is ok!")
 

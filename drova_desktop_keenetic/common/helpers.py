@@ -69,7 +69,7 @@ class BaseDrovaMerchantWindows:
                 stdout = complete_process.stdout.encode()
             servers = RegQueryEsme.parseAuthCode(stdout=stdout)
         except NotFoundAuthCode:
-            raise RebootRequired
+            raise RebootRequired()
         self.dict_store["servers"] = servers
         return servers
 
