@@ -282,11 +282,12 @@ class PatchNetworkHardening(IPatch):
         firewall_rules = [
             'netsh advfirewall firewall add rule name="Block SMB Out" dir=out protocol=TCP remoteport=445,139 action=block',
             'netsh advfirewall firewall add rule name="Block NetBIOS Out" dir=out protocol=UDP remoteport=137,138 action=block',
+            'netsh advfirewall firewall set rule group="Network Discovery" new enable=No',
         ]
         discovery_services = ["FDResPub", "SSDPSRV", "fdPHost"]
 
         for rule in firewall_rules:
-            self.logger.info(f"Adding firewall rule: {rule}")
+            self.logger.info(f"Applying firewall rule: {rule}")
             await self.client.run(rule, check=False)
 
         for svc in discovery_services:
