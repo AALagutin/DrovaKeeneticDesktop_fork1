@@ -44,7 +44,7 @@ class SessionsResponse(BaseModel):
 
 
 class ProductInfo(BaseModel):
-    model_config = ConfigDict(extra="allow")  # todo add full
+    model_config = ConfigDict(extra="ignore")
     product_id: UUID
     game_path: PureWindowsPath
     work_path: PureWindowsPath
