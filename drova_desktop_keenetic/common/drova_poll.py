@@ -36,7 +36,7 @@ class DrovaPollWorker:
         self.poll_interval_idle = poll_interval_idle
         self.poll_interval_active = poll_interval_active
         self.product_catalog = product_catalog
-        self.token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
+        self.token_cache = ExpiringDict(max_len=10, max_age_seconds=600)
         self._stop_event = asyncio.Event()
         self.logger = logger.getChild(f"Worker[{host_config.name}]")
 

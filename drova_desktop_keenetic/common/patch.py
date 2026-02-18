@@ -1,6 +1,7 @@
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from asyncio import create_task, sleep, wait
+from asyncio import sleep
 from configparser import ConfigParser
 from pathlib import Path, PureWindowsPath
 from typing import Generator
@@ -250,8 +251,19 @@ class PatchWindowsSettings(IPatch):
         return None
 
     async def patch(self) -> None:
-        tasks = (create_task(self._apply_reg_patch(patch)) for patch in self._get_patches())
-        await wait(tasks)
+        sem = asyncio.Semaphore(5)
+
+        async def _limited(patch: RegistryPatch) -> None:
+            async with sem:
+                await self._apply_reg_patch(patch)
+
+        results = await asyncio.gather(
+            *[_limited(p) for p in self._get_patches()],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error(f"Registry patch failed: {result}")
 
         await self.client.run("gpupdate /target:user /force", check=True)
         await sleep(1)
