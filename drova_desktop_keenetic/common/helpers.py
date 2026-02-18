@@ -31,17 +31,30 @@ class BaseDrovaMerchantWindows:
         self.api_client = api_client or DrovaApiClient()
         self.dict_store = token_cache if token_cache is not None else ExpiringDict(max_len=100, max_age_seconds=60)
 
+    async def get_servers(self) -> list[tuple[str, str]]:
+        if "servers" not in self.dict_store:
+            await self.refresh_actual_tokens()
+        return self.dict_store["servers"]
+
     async def get_auth_token(self) -> str:
         if "auth_token" not in self.dict_store:
-            await self.refresh_actual_tokens()
+            servers = await self.get_servers()
+            self.dict_store["server_id"] = servers[0][0]
+            self.dict_store["auth_token"] = servers[0][1]
         return self.dict_store["auth_token"]
 
     async def get_server_id(self) -> str:
         if "server_id" not in self.dict_store:
-            await self.refresh_actual_tokens()
+            servers = await self.get_servers()
+            self.dict_store["server_id"] = servers[0][0]
+            self.dict_store["auth_token"] = servers[0][1]
         return self.dict_store["server_id"]
 
-    async def refresh_actual_tokens(self) -> tuple[str, str]:
+    def set_active_server(self, server_id: str, auth_token: str) -> None:
+        self.dict_store["server_id"] = server_id
+        self.dict_store["auth_token"] = auth_token
+
+    async def refresh_actual_tokens(self) -> list[tuple[str, str]]:
         complete_process = await self.client.run(str(RegQueryEsme()))
         stdout = b""
 
@@ -51,16 +64,18 @@ class BaseDrovaMerchantWindows:
         try:
             if isinstance(complete_process.stdout, str):
                 stdout = complete_process.stdout.encode()
-            self.dict_store["server_id"], self.dict_store["auth_token"] = RegQueryEsme.parseAuthCode(stdout=stdout)
+            servers = RegQueryEsme.parseAuthCode(stdout=stdout)
         except NotFoundAuthCode:
             raise RebootRequired
-        return self.dict_store["server_id"], self.dict_store["auth_token"]
+        self.dict_store["servers"] = servers
+        return servers
 
-    async def check_desktop_session(self, session: SessionsEntity) -> bool:
+    async def check_desktop_session(self, session: SessionsEntity, auth_token: str | None = None) -> bool:
         self.logger.info(f"Check session product_id = {session.product_id}")
         if session.product_id == UUID_DESKTOP:
             return True
-        product_info = await self.api_client.get_product_info(session.product_id, auth_token=await self.get_auth_token())
+        token = auth_token or await self.get_auth_token()
+        product_info = await self.api_client.get_product_info(session.product_id, auth_token=token)
         self.logger.info(f"product_info: {product_info}")
         return product_info.use_default_desktop
 
@@ -70,14 +85,18 @@ class CheckDesktop(BaseDrovaMerchantWindows):
 
     async def run(self) -> bool:
         self.logger.info("Checking for active desktop session")
-        session = await self.api_client.get_latest_session(await self.get_server_id(), await self.get_auth_token())
-        self.logger.debug(f"Session: {session}")
+        servers = await self.get_servers()
+        for server_id, auth_token in servers:
+            session = await self.api_client.get_latest_session(server_id, auth_token)
+            self.logger.debug(f"Server {server_id}: session={session}")
 
-        if not session:
-            return False
+            if not session:
+                continue
 
-        if session.status in (StatusEnum.HANDSHAKE, StatusEnum.ACTIVE, StatusEnum.NEW):
-            return await self.check_desktop_session(session)
+            if session.status in (StatusEnum.HANDSHAKE, StatusEnum.ACTIVE, StatusEnum.NEW):
+                if await self.check_desktop_session(session, auth_token):
+                    self.set_active_server(server_id, auth_token)
+                    return True
         return False
 
 
@@ -119,14 +138,18 @@ class WaitNewDesktopSession(BaseDrovaMerchantWindows):
 
     async def run(self) -> bool:
         while True:
-            session = await self.api_client.get_latest_session(await self.get_server_id(), await self.get_auth_token())
-            if not session:
-                return False
+            servers = await self.get_servers()
+            for server_id, auth_token in servers:
+                session = await self.api_client.get_latest_session(server_id, auth_token)
+                if not session:
+                    continue
 
-            if session.status in (
-                StatusEnum.HANDSHAKE,
-                StatusEnum.NEW,
-                StatusEnum.ACTIVE,
-            ):
-                return await self.check_desktop_session(session)
+                if session.status in (
+                    StatusEnum.HANDSHAKE,
+                    StatusEnum.NEW,
+                    StatusEnum.ACTIVE,
+                ):
+                    if await self.check_desktop_session(session, auth_token):
+                        self.set_active_server(server_id, auth_token)
+                        return True
             await sleep(self.poll_interval)

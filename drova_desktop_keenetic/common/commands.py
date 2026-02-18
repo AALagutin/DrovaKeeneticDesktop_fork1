@@ -16,8 +16,6 @@ class PsExecNotFoundExecutable(RuntimeError): ...
 class NotFoundAuthCode(RuntimeError): ...
 
 
-class DuplicateAuthCode(RuntimeError): ...
-
 
 @dataclass(kw_only=True)
 class ICommandBuilder(ABC):
@@ -136,23 +134,27 @@ class RegQueryEsme(ICommandBuilder):
         return " ".join(("reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers", "/s", "/f", "auth_token"))
 
     @staticmethod
-    def parseAuthCode(stdout: bytes) -> tuple[str, str]:
-        r_auth_token = re.compile(r"auth_token\s+REG_SZ\s+(?P<auth_token>\S+)", re.MULTILINE)
+    def parseAuthCode(stdout: bytes) -> list[tuple[str, str]]:
+        """Parse registry output and return list of (server_id, auth_token) pairs."""
+        decoded = stdout.decode("windows-1251")
 
-        r_servers = re.compile(r"servers\\(?P<server_id>\S+)", re.MULTILINE)
+        r_server = re.compile(r"servers\\(?P<server_id>[^\s\\]+)")
+        r_token = re.compile(r"auth_token\s+REG_SZ\s+(?P<auth_token>\S+)")
 
-        matches_auth_token = r_auth_token.findall(stdout.decode("windows-1251"))
-        if not matches_auth_token:
+        # Split into blocks separated by blank lines (each server is its own block)
+        blocks = re.split(r"\r?\n\r?\n", decoded)
+
+        results: list[tuple[str, str]] = []
+        for block in blocks:
+            server_match = r_server.search(block)
+            token_match = r_token.search(block)
+            if server_match and token_match:
+                results.append((server_match["server_id"], token_match["auth_token"]))
+
+        if not results:
             raise NotFoundAuthCode()
 
-        if len(matches_auth_token) > 1:
-            raise DuplicateAuthCode()
-
-        matches_server_id = r_servers.search(stdout.decode("windows-1251"))
-        if not matches_server_id:
-            raise NotFoundAuthCode()
-
-        return matches_server_id["server_id"], matches_auth_token[0]
+        return results
 
 
 class RegValueType(StrEnum):
