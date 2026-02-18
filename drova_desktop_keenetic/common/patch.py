@@ -270,4 +270,28 @@ class PatchWindowsSettings(IPatch):
         await self.client.run(str(PsExec(command="explorer.exe")), check=False)
 
 
-ALL_PATCHES = (EpicGamesAuthDiscard, SteamAuthDiscard, UbisoftAuthDiscard, WargamingAuthDiscard, PatchWindowsSettings)
+class PatchNetworkHardening(IPatch):
+    logger = logger.getChild("PatchNetworkHardening")
+    NAME = "NetworkHardening"
+    TASKKILL_IMAGE = ""
+
+    async def _patch(self, _: Path) -> None:
+        return None
+
+    async def patch(self) -> None:
+        firewall_rules = [
+            'netsh advfirewall firewall add rule name="Block SMB Out" dir=out protocol=TCP localport=445,139 action=block',
+            'netsh advfirewall firewall add rule name="Block NetBIOS Out" dir=out protocol=UDP localport=137,138 action=block',
+        ]
+        discovery_services = ["FDResPub", "SSDPSRV"]
+
+        for rule in firewall_rules:
+            self.logger.info(f"Adding firewall rule: {rule}")
+            await self.client.run(rule, check=False)
+
+        for svc in discovery_services:
+            self.logger.info(f"Stopping discovery service: {svc}")
+            await self.client.run(f"sc stop {svc}", check=False)
+
+
+ALL_PATCHES = (EpicGamesAuthDiscard, SteamAuthDiscard, UbisoftAuthDiscard, WargamingAuthDiscard, PatchWindowsSettings, PatchNetworkHardening)
