@@ -71,13 +71,15 @@ class BaseDrovaMerchantWindows:
         return servers
 
     async def check_desktop_session(self, session: SessionsEntity, auth_token: str | None = None) -> bool:
-        self.logger.info(f"Check session product_id = {session.product_id}")
         if session.product_id == UUID_DESKTOP:
             return True
+        cache_key = f"product:{session.product_id}"
+        if cache_key in self.dict_store:
+            return self.dict_store[cache_key]
         token = auth_token or await self.get_auth_token()
         product_info = await self.api_client.get_product_info(session.product_id, auth_token=token)
         self.logger.info(f"Product '{product_info.title}' use_default_desktop={product_info.use_default_desktop}")
-        self.logger.debug(f"product_info: {product_info}")
+        self.dict_store[cache_key] = product_info.use_default_desktop
         return product_info.use_default_desktop
 
 
