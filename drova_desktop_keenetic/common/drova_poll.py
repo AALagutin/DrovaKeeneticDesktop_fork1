@@ -124,6 +124,8 @@ class DrovaPollWorker:
                     self.logger.info("Reboot required on startup check")
                     after = AfterDisconnect(conn, self.host_config)
                     await after.run()
+        except (ChannelOpenError, OSError):
+            self.logger.debug("Cannot connect on startup - PC unavailable or rebooting")
         except Exception:
             self.logger.exception("Error checking existing session on startup")
 
