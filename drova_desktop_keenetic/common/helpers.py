@@ -76,7 +76,8 @@ class BaseDrovaMerchantWindows:
             return True
         token = auth_token or await self.get_auth_token()
         product_info = await self.api_client.get_product_info(session.product_id, auth_token=token)
-        self.logger.info(f"product_info: {product_info}")
+        self.logger.info(f"Product '{product_info.title}' use_default_desktop={product_info.use_default_desktop}")
+        self.logger.debug(f"product_info: {product_info}")
         return product_info.use_default_desktop
 
 
