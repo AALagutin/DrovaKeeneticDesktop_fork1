@@ -36,6 +36,7 @@ class DrovaPollWorker:
         self.poll_interval_idle = poll_interval_idle
         self.poll_interval_active = poll_interval_active
         self.product_catalog = product_catalog
+        self.token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
         self._stop_event = asyncio.Event()
         self.logger = logger.getChild(f"Worker[{host_config.name}]")
 
@@ -84,8 +85,7 @@ class DrovaPollWorker:
             try:
                 async with self._connect_ssh() as conn:
                     try:
-                        token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
-                        await self._handle_session(conn, token_cache)
+                        await self._handle_session(conn, self.token_cache)
                     except RebootRequired:
                         self.logger.info("Reboot required")
                         after = AfterDisconnect(conn, self.host_config)
@@ -107,13 +107,12 @@ class DrovaPollWorker:
         try:
             async with self._connect_ssh() as conn:
                 try:
-                    token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
-                    check = CheckDesktop(conn, self.api_client, token_cache, product_catalog=self.product_catalog)
+                    check = CheckDesktop(conn, self.api_client, self.token_cache, product_catalog=self.product_catalog)
                     is_desktop = await check.run()
                     if is_desktop:
                         self.logger.info("Existing session found - waiting for it to finish")
                         wait_finish = WaitFinishOrAbort(
-                            conn, self.api_client, token_cache,
+                            conn, self.api_client, self.token_cache,
                             poll_interval=self.poll_interval_active, product_catalog=self.product_catalog,
                         )
                         await wait_finish.run()
