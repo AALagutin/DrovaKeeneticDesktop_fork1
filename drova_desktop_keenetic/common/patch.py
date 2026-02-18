@@ -280,10 +280,10 @@ class PatchNetworkHardening(IPatch):
 
     async def patch(self) -> None:
         firewall_rules = [
-            'netsh advfirewall firewall add rule name="Block SMB Out" dir=out protocol=TCP localport=445,139 action=block',
-            'netsh advfirewall firewall add rule name="Block NetBIOS Out" dir=out protocol=UDP localport=137,138 action=block',
+            'netsh advfirewall firewall add rule name="Block SMB Out" dir=out protocol=TCP remoteport=445,139 action=block',
+            'netsh advfirewall firewall add rule name="Block NetBIOS Out" dir=out protocol=UDP remoteport=137,138 action=block',
         ]
-        discovery_services = ["FDResPub", "SSDPSRV"]
+        discovery_services = ["FDResPub", "SSDPSRV", "fdPHost"]
 
         for rule in firewall_rules:
             self.logger.info(f"Adding firewall rule: {rule}")
