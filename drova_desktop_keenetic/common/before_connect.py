@@ -33,6 +33,22 @@ class BeforeConnect:
             )
             await sleep(2)
 
+            # Pre-schedule SD exit on next reboot as a safety net.
+            # If cmdtool.exe gets deleted during the session, AfterDisconnect
+            # will fall back to a forced OS reboot. Because this exit flag was
+            # already set while cmdtool was still alive, that reboot will still
+            # properly exit Shadow Defender mode.
+            self.logger.info("pre-schedule shadow exit on next reboot (safety net)")
+            await self.client.run(
+                str(
+                    ShadowDefenderCLI(
+                        password=self.host_config.shadow_defender_password,
+                        actions=["exit"],
+                        drives=self.host_config.shadow_defender_drives,
+                    )
+                )
+            )
+
             failed_patches: list[str] = []
             for patch_cls in ALL_PATCHES:
                 self.logger.info(f"prepare {patch_cls.NAME}")
