@@ -8,6 +8,7 @@ from drova_desktop_keenetic.common.contants import (
     DROVA_CONFIG,
     POLL_INTERVAL_ACTIVE,
     POLL_INTERVAL_IDLE,
+    PRODUCT_CATALOG_PATH,
     SHADOW_DEFENDER_DRIVES,
     SHADOW_DEFENDER_PASSWORD,
     WINDOWS_HOST,
@@ -34,6 +35,7 @@ class AppConfig:
     hosts: list[HostConfig]
     poll_interval_idle: float = 5.0
     poll_interval_active: float = 3.0
+    product_catalog_path: str = "drova_products.json"
 
 
 def load_config() -> AppConfig:
@@ -52,6 +54,7 @@ def _load_from_env() -> AppConfig:
 
     poll_idle = float(os.environ.get(POLL_INTERVAL_IDLE, "5"))
     poll_active = float(os.environ.get(POLL_INTERVAL_ACTIVE, "3"))
+    catalog_path = os.environ.get(PRODUCT_CATALOG_PATH, "drova_products.json")
 
     hosts_str = os.environ.get(WINDOWS_HOSTS, "")
     if hosts_str:
@@ -73,7 +76,7 @@ def _load_from_env() -> AppConfig:
         )
 
     logger.info(f"Loaded {len(hosts)} host(s) from environment")
-    return AppConfig(hosts=hosts, poll_interval_idle=poll_idle, poll_interval_active=poll_active)
+    return AppConfig(hosts=hosts, poll_interval_idle=poll_idle, poll_interval_active=poll_active, product_catalog_path=catalog_path)
 
 
 def _load_from_json(path: str) -> AppConfig:
@@ -83,6 +86,7 @@ def _load_from_json(path: str) -> AppConfig:
     defaults = data.get("defaults", {})
     poll_idle = data.get("poll_interval_idle", 5.0)
     poll_active = data.get("poll_interval_active", 3.0)
+    catalog_path = data.get("product_catalog_path", "drova_products.json")
 
     hosts = []
     for i, host_data in enumerate(data["hosts"]):
@@ -104,4 +108,4 @@ def _load_from_json(path: str) -> AppConfig:
         )
 
     logger.info(f"Loaded {len(hosts)} host(s) from {path}")
-    return AppConfig(hosts=hosts, poll_interval_idle=poll_idle, poll_interval_active=poll_active)
+    return AppConfig(hosts=hosts, poll_interval_idle=poll_idle, poll_interval_active=poll_active, product_catalog_path=catalog_path)

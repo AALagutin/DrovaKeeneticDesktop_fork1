@@ -11,6 +11,7 @@ from drova_desktop_keenetic.common.drova import (
     SessionsEntity,
     StatusEnum,
 )
+from drova_desktop_keenetic.common.product_catalog import ProductCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +27,12 @@ class BaseDrovaMerchantWindows:
         client: SSHClientConnection,
         api_client: DrovaApiClient | None = None,
         token_cache: ExpiringDict | None = None,
+        product_catalog: ProductCatalog | None = None,
     ):
         self.client = client
         self.api_client = api_client or DrovaApiClient()
         self.dict_store = token_cache if token_cache is not None else ExpiringDict(max_len=100, max_age_seconds=60)
+        self.product_catalog = product_catalog
 
     async def get_servers(self) -> list[tuple[str, str]]:
         if "servers" not in self.dict_store:
@@ -73,13 +76,27 @@ class BaseDrovaMerchantWindows:
     async def check_desktop_session(self, session: SessionsEntity, auth_token: str | None = None) -> bool:
         if session.product_id == UUID_DESKTOP:
             return True
+
+        # 1. Check file-based product catalog
+        if self.product_catalog is not None:
+            cached = self.product_catalog.get_use_default_desktop(session.product_id)
+            if cached is not None:
+                return cached
+
+        # 2. Check in-memory cache
         cache_key = f"product:{session.product_id}"
         if cache_key in self.dict_store:
             return self.dict_store[cache_key]
+
+        # 3. Fetch from API and save to both caches
         token = auth_token or await self.get_auth_token()
         product_info = await self.api_client.get_product_info(session.product_id, auth_token=token)
         self.logger.info(f"Product '{product_info.title}' use_default_desktop={product_info.use_default_desktop}")
         self.dict_store[cache_key] = product_info.use_default_desktop
+        if self.product_catalog is not None:
+            self.product_catalog.set_use_default_desktop(
+                session.product_id, product_info.title, product_info.use_default_desktop
+            )
         return product_info.use_default_desktop
 
 
@@ -112,8 +129,9 @@ class WaitFinishOrAbort(BaseDrovaMerchantWindows):
         api_client: DrovaApiClient | None = None,
         token_cache: ExpiringDict | None = None,
         poll_interval: float = 3.0,
+        product_catalog: ProductCatalog | None = None,
     ):
-        super().__init__(client, api_client, token_cache)
+        super().__init__(client, api_client, token_cache, product_catalog)
         self.poll_interval = poll_interval
 
     async def run(self) -> bool:
@@ -135,8 +153,9 @@ class WaitNewDesktopSession(BaseDrovaMerchantWindows):
         api_client: DrovaApiClient | None = None,
         token_cache: ExpiringDict | None = None,
         poll_interval: float = 5.0,
+        product_catalog: ProductCatalog | None = None,
     ):
-        super().__init__(client, api_client, token_cache)
+        super().__init__(client, api_client, token_cache, product_catalog)
         self.poll_interval = poll_interval
 
     async def run(self) -> bool:

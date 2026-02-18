@@ -15,6 +15,7 @@ from drova_desktop_keenetic.common.helpers import (
     WaitNewDesktopSession,
 )
 from drova_desktop_keenetic.common.host_config import AppConfig, HostConfig
+from drova_desktop_keenetic.common.product_catalog import ProductCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,13 @@ class DrovaPollWorker:
         api_client: DrovaApiClient,
         poll_interval_idle: float = 5.0,
         poll_interval_active: float = 3.0,
+        product_catalog: ProductCatalog | None = None,
     ):
         self.host_config = host_config
         self.api_client = api_client
         self.poll_interval_idle = poll_interval_idle
         self.poll_interval_active = poll_interval_active
+        self.product_catalog = product_catalog
         self._stop_event = asyncio.Event()
         self.logger = logger.getChild(f"Worker[{host_config.name}]")
 
@@ -47,11 +50,14 @@ class DrovaPollWorker:
 
     async def _handle_session(self, conn, token_cache: ExpiringDict) -> None:
         """Handle one complete session cycle: check -> wait -> prepare -> wait_finish -> cleanup."""
-        check = CheckDesktop(conn, self.api_client, token_cache)
+        check = CheckDesktop(conn, self.api_client, token_cache, product_catalog=self.product_catalog)
         is_desktop_session = await check.run()
 
         if not is_desktop_session:
-            wait_new = WaitNewDesktopSession(conn, self.api_client, token_cache, poll_interval=self.poll_interval_idle)
+            wait_new = WaitNewDesktopSession(
+                conn, self.api_client, token_cache,
+                poll_interval=self.poll_interval_idle, product_catalog=self.product_catalog,
+            )
             is_desktop_session = await wait_new.run()
 
         if is_desktop_session:
@@ -63,7 +69,8 @@ class DrovaPollWorker:
 
             self.logger.info("Waiting for session to finish")
             wait_finish = WaitFinishOrAbort(
-                conn, self.api_client, token_cache, poll_interval=self.poll_interval_active
+                conn, self.api_client, token_cache,
+                poll_interval=self.poll_interval_active, product_catalog=self.product_catalog,
             )
             await wait_finish.run()
 
@@ -101,12 +108,13 @@ class DrovaPollWorker:
             async with self._connect_ssh() as conn:
                 try:
                     token_cache = ExpiringDict(max_len=10, max_age_seconds=60)
-                    check = CheckDesktop(conn, self.api_client, token_cache)
+                    check = CheckDesktop(conn, self.api_client, token_cache, product_catalog=self.product_catalog)
                     is_desktop = await check.run()
                     if is_desktop:
                         self.logger.info("Existing session found - waiting for it to finish")
                         wait_finish = WaitFinishOrAbort(
-                            conn, self.api_client, token_cache, poll_interval=self.poll_interval_active
+                            conn, self.api_client, token_cache,
+                            poll_interval=self.poll_interval_active, product_catalog=self.product_catalog,
                         )
                         await wait_finish.run()
 
@@ -130,10 +138,18 @@ class DrovaManager:
     def __init__(self, config: AppConfig):
         self.config = config
         self.api_client = DrovaApiClient()
+        self.product_catalog = ProductCatalog(config.product_catalog_path)
         self.workers: list[DrovaPollWorker] = []
 
     async def run(self) -> None:
         logger.info(f"Starting DrovaManager with {len(self.config.hosts)} host(s)")
+
+        # Refresh product catalog if needed (once per day)
+        if self.product_catalog.needs_refresh():
+            logger.info("Product catalog needs refresh, fetching from API...")
+            await self.product_catalog.refresh(self.api_client)
+        else:
+            logger.info(f"Product catalog is up to date ({self.product_catalog.product_count} products)")
 
         for host_config in self.config.hosts:
             worker = DrovaPollWorker(
@@ -141,6 +157,7 @@ class DrovaManager:
                 api_client=self.api_client,
                 poll_interval_idle=self.config.poll_interval_idle,
                 poll_interval_active=self.config.poll_interval_active,
+                product_catalog=self.product_catalog,
             )
             self.workers.append(worker)
 

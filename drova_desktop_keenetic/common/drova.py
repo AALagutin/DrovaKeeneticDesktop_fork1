@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 URL_SESSIONS = "https://services.drova.io/session-manager/sessions?"
 URL_PRODUCT = "https://services.drova.io/server-manager/product/get/{product_id}"
+URL_PRODUCT_LIST = "https://services.drova.io/product-manager/product/listfull2"
 UUID_DESKTOP = UUID("9fd0eb43-b2bb-4ce3-93b8-9df63f209098")
 
 
@@ -41,6 +42,14 @@ class SessionsEntity(BaseModel):
 
 class SessionsResponse(BaseModel):
     sessions: list[SessionsEntity]
+
+
+class ProductListItem(BaseModel):
+    """Product entry from the public listfull2 catalog endpoint."""
+
+    model_config = ConfigDict(extra="ignore")
+    productId: UUID
+    title: str
 
 
 class ProductInfo(BaseModel):
@@ -96,3 +105,11 @@ class DrovaApiClient:
         ) as resp:
             resp.raise_for_status()
             return ProductInfo(**await resp.json())
+
+    async def get_product_list(self) -> list[ProductListItem]:
+        """Fetch the full public product catalog (no auth required)."""
+        session = await self._get_session()
+        async with session.get(URL_PRODUCT_LIST) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return [ProductListItem(**item) for item in data]
