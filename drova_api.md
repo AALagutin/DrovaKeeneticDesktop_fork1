@@ -775,11 +775,92 @@ class ProductInfo(BaseModel):
 
 ---
 
-## Сопутствующие внешние API
+## Сопутствующие техники и внешние API
+
+### Пассивный захват IP игрока через TCP (порт 7990)
+
+Используется в [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) вместо опроса Drova API. Нотификатор пассивно слушает TCP-порты, на которые Drova-клиент (`ese.exe`) устанавливает соединение, и извлекает IP из метаданных входящего подключения.
+
+**Порты:**
+
+| Константа | Порт | Назначение |
+|-----------|------|------------|
+| `remoutPort` | `7990` | Порт, на который Drova-клиент игрока подключается к станции; даёт **внешний IP игрока** |
+| `localPort` | `139` | SMB/NetBIOS; входящее соединение показывает, какой локальный интерфейс использует станция; даёт **локальный IP сервера** |
+
+**Глобальные переменные, заполняемые при подключении:**
+```go
+var (
+    remoteAddr string  // внешний IP игрока
+    localAddr  string  // локальный IP сервера
+)
+```
+
+**Запуск слушателей** (`main.go`):
+```go
+const (
+    remoutPort = "7990"
+    localPort  = "139"
+)
+
+go listenPort(remoutPort) // горутина: ждёт подключения клиента игрока
+go listenPort(localPort)  // горутина: ждёт любого SMB-соединения
+```
+
+**Приём соединения и извлечение IP** (`main.go`):
+```go
+func listenPort(port string) {
+    listener, err := net.Listen("tcp", ":"+port)
+    if err != nil {
+        log.Println("Ошибка при прослушивании порта: ", err)
+        return
+    }
+    defer listener.Close()
+    for {
+        conn, err := listener.Accept()
+        if err != nil {
+            return
+        }
+        go findIP(conn)
+    }
+}
+
+func findIP(conn net.Conn) {
+    // IP игрока — из RemoteAddr входящего соединения
+    remoteIP := conn.RemoteAddr().String()        // "1.2.3.4:54321"
+    ip, _, _ := net.SplitHostPort(remoteIP)
+    remoteAddr = ip                               // -> "1.2.3.4"
+
+    // IP сервера — из LocalAddr того же соединения
+    localIP := conn.LocalAddr().String()
+    locip, _, _ := net.SplitHostPort(localIP)
+    localAddr = locip
+
+    conn.Close()
+}
+```
+
+**Использование в основном цикле** (`main.go`):
+```go
+// После детектирования запуска ese.exe и определения игры:
+gamerIP := remoteAddr                  // IP, захваченный через порт 7990
+serverIP := localAddr                  // локальный IP сервера
+city, region, isp := ipInfo(remoteAddr) // геолокация через ipinfo.io
+
+chatMessage := hostname + " - " + gamerIP +
+    "\nНачало сессии - " + startTimeApp +
+    "\nИгра - " + game +
+    "\nserverIP = " + serverIP +
+    "\nГород: " + city + "\nОбласть: " + region + "\nПровайдер: " + isp
+```
+
+> **Почему порт 7990:** это порт, на который Drova-клиент (`ese.exe`) подключается к станции при старте стримингового сеанса. Нотификатор не обращается к Drova API за информацией о сессии — вместо этого факт подключения к порту 7990 и является сигналом о начале сессии.
+
+---
 
 ### ipinfo.io — геолокация IP
 
-Используется в [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) для определения города, региона и провайдера подключающегося игрока.
+Используется в [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) для определения города, региона и провайдера подключающегося игрока. IP для запроса получается методом выше (TCP порт 7990).
 
 **Метод:** `GET`
 **URL:** `https://ipinfo.io/{ip}/json`
