@@ -268,6 +268,52 @@ function rewriteSessionsLimit(urlLike) {
 }
 ```
 
+**[DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1)** (`main.go`, `sessionInfo.go`) — Go, токен из Windows-реестра, `creator_ip` используется для геолокации игрока:
+```go
+const UrlSessions = "https://services.drova.io/session-manager/sessions"
+
+// Единая функция для всех Drova-запросов:
+func getFromURL(url, cell, IDinCell string) (responseString string, err error) {
+    _, err = http.Get("https://services.drova.io") // проверка доступности
+    if err != nil {
+        return
+    }
+    client := &http.Client{}
+    req, _ := http.NewRequest("GET", url, nil)
+    q := req.URL.Query()
+    q.Add(cell, IDinCell) // cell="server_id", IDinCell=<serverID>
+    req.URL.RawQuery = q.Encode()
+    req.Header.Set("X-Auth-Token", authToken)
+    resp, _ := client.Do(req)
+    // ...
+    return
+}
+
+// Структуры ответа:
+type SessionsData struct {
+    Sessions []struct {
+        Session_uuid  string `json:"uuid"`
+        Product_id    string `json:"product_id"`
+        Created_on    int64  `json:"created_on"`
+        Finished_on   int64  `json:"finished_on"`
+        Status        string `json:"status"`
+        Creator_ip    string `json:"creator_ip"`   // IP игрока — передаётся в ipinfo.io
+        Abort_comment string `json:"abort_comment"`
+        Score         int64  `json:"score"`
+        ScoreReason   int64  `json:"score_reason"`
+        Comment       string `json:"score_text"`
+        Billing_type  string `json:"billing_type"`
+    }
+}
+
+// Токен и server_id из реестра Windows:
+regFolder := `SOFTWARE\ITKey\Esme`
+serverID   = regGet(regFolder, "last_server")
+authToken  = regGet(regFolder+`\servers\`+serverID, "auth_token")
+```
+
+> В V2 IP игрока берётся из поля `creator_ip` ответа API — в отличие от V1, где он захватывался через TCP-порт 7990.
+
 ---
 
 ## 4. GET /server-manager/servers
@@ -772,6 +818,7 @@ class ProductInfo(BaseModel):
 | [Drova-Session-INFO_Fork1](https://github.com/AALagutin/Drova-Session-INFO_Fork1) | Go (net/http) | `/server-manager/servers`, `/session-manager/sessions`, `/product-manager/product/listfull2` |
 | [steambulkvalidate_fork1](https://github.com/AALagutin/steambulkvalidate_fork1) | Python | — (локальная утилита Steam, Drova API не использует) |
 | [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) | Go (net/http) | — (Drova API не использует; сессии определяет по процессу `ese.exe` и TCP-порту 7990; внешний вызов только `ipinfo.io`) |
+| [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) | Go (net/http) | `/session-manager/sessions`, `/product-manager/product/listfull2`; + `ipinfo.io`, `LibreHardwareMonitor`, `GeoLite2/GitHub`, `Telegram Bot API` |
 
 ---
 
@@ -900,3 +947,230 @@ func ipInfo(ip string) (city, region, isp string) {
 ```
 
 Вызывается после того, как нотификатор принял входящее TCP-соединение на порт `7990` и получил IP игрока.
+
+В [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) вызывается с тем же `ipinfo.io`, но IP берётся из поля `creator_ip` ответа `/session-manager/sessions`, а не из TCP.
+
+---
+
+### Определение локального IP через сетевые интерфейсы
+
+Используется в [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) (`main.go`) как альтернатива прослушиванию порта 139. Выбирает интерфейс с наибольшим исходящим трафиком за 15 секунд.
+
+**Функция определения активного интерфейса** (`ipinf.go`):
+```go
+func getSpeed() (name string, maxSpeed float64) {
+    r1, _ := net.IOCounters(true)   // снимок счётчиков байт по интерфейсам
+    time.Sleep(15 * time.Second)
+    r2, _ := net.IOCounters(true)   // второй снимок через 15 с
+    for i, r := range r2 {
+        outgoing := float64(r.BytesSent - r1[i].BytesSent)
+        if outgoing > maxSpeed {
+            maxSpeed = outgoing
+            name = r.Name           // имя интерфейса с максимальным исходящим
+        }
+    }
+    return
+}
+```
+
+**Получение IP выбранного интерфейса** (`main.go`):
+```go
+func getInterface() (localAddr, nameInterface string) {
+    maxInterfaceName, _ := getSpeed()
+    interfaces, _ := net.Interfaces()
+    for _, iface := range interfaces {
+        addrs, _ := iface.Addrs()
+        var localIP string
+        for _, addr := range addrs {
+            if ip, ok := addr.(*net.IPNet); ok {
+                localIP = ip.String() // "192.168.1.100/24"
+            }
+        }
+        if iface.Name == maxInterfaceName {
+            localAddr = localIP
+        }
+    }
+    return
+}
+```
+
+> V1 (DROVA_NOTIFIER) получал локальный IP через `LocalAddr()` входящего TCP-соединения на порт 139. V2 (DrovaNotifierV2) использует `net.IOCounters()` для выбора самого нагруженного интерфейса — что надёжнее на машинах с несколькими сетевыми адаптерами.
+
+---
+
+### LibreHardwareMonitor — локальный HTTP API температур
+
+Используется в [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) (`gettemp.go`) для мониторинга температуры CPU/GPU и оборотов вентиляторов. Требует запущенного [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) с включённым веб-сервером.
+
+**Метод:** `GET`
+**URL:** `http://localhost:8085/data.json`
+**Auth:** нет (локальный)
+**Параметры:** нет
+
+**Структура ответа** — рекурсивное дерево узлов:
+```go
+type Node struct {
+    ID       int    `json:"id"`
+    Text     string `json:"Text"`     // название узла ("CPU Package", "GPU Core" и т.д.)
+    Min      string `json:"Min"`      // мин. значение ("35,0 °C")
+    Value    string `json:"Value"`    // текущее значение ("67,0 °C")
+    Max      string `json:"Max"`      // макс. значение
+    ImageURL string `json:"ImageURL"` // иконка категории
+    Children []Node `json:"Children"` // дочерние узлы
+}
+```
+
+**Пример использования** (`gettemp.go`):
+```go
+func GetTemperature() (tCPU, tGPU, tGPUhs, fan1, fanp1, fan2, fanp2 float64, tMessage string) {
+    // Проверка доступности:
+    if _, err := http.Get("http://localhost:8085/data.json"); err != nil {
+        return // LHM не запущен
+    }
+    resp, err := http.Get("http://localhost:8085/data.json")
+    if err != nil {
+        return
+    }
+    defer resp.Body.Close()
+    body, _ := io.ReadAll(resp.Body)
+
+    var root Node
+    json.Unmarshal(body, &root)
+    // Обход дерева для поиска нужных датчиков...
+}
+```
+
+Значения порогов (CPU/GPU max temp, обороты вентилятора) конфигурируются в `config.txt`:
+```
+CPUtmax = 85
+GPUtmax = 85
+GPUhsTmax = 90
+FANt = 75
+FANrpm = 900
+```
+
+---
+
+### Автообновление базы GeoLite2 через GitHub API
+
+Используется в [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) (`ipinf.go`) и [Drova-Session-INFO_Fork1](https://github.com/AALagutin/Drova-Session-INFO_Fork1) (`main.go`). Сравнивает дату последнего релиза с датой локального файла, при необходимости скачивает новые базы.
+
+**Шаг 1 — получить дату последнего релиза:**
+
+| Поле | Значение |
+|------|----------|
+| Метод | GET |
+| URL | `https://api.github.com/repos/P3TERX/GeoLite.mmdb/releases/latest` |
+| Auth | нет |
+
+```go
+type Release struct {
+    PublishedAt time.Time `json:"published_at"`
+}
+
+resp, _ := http.Get("https://api.github.com/repos/P3TERX/GeoLite.mmdb/releases/latest")
+var release Release
+json.NewDecoder(resp.Body).Decode(&release)
+// release.PublishedAt сравнивается с os.Stat(mmdbFile).ModTime()
+```
+
+**Шаг 2 — скачать файлы баз (если релиз новее):**
+
+| Файл | URL |
+|------|-----|
+| ASN база | `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-ASN.mmdb` |
+| City база | `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb` |
+
+```go
+func downloadFile(filepath, url string) error {
+    resp, err := http.Get(url)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    out, _ := os.Create(filepath)
+    defer out.Close()
+    io.Copy(out, resp.Body)
+    return nil
+}
+```
+
+После скачивания базы используются офлайн через `github.com/oschwald/maxminddb-golang` для определения города, региона и ASN/провайдера по IP — без сетевых запросов.
+
+---
+
+### Telegram Bot API
+
+Используется в [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) (`telegram.go`) для отправки уведомлений о сессиях и приёма команд. Токен и chat_id хранятся в `config.txt`.
+
+**Конфигурация** (`config.txt`):
+```
+Tokenbot = 123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ChatID = -100123456789
+ServiceChatID = -100987654321
+UserID = 123456789
+CommandON = true
+```
+
+#### POST /bot{token}/sendMessage
+
+```go
+// Через библиотеку go-telegram-bot-api/v5:
+func SendMessage(botToken string, chatID int64, text string, mesID int) (int, error) {
+    bot, _ := tgbotapi.NewBotAPI(botToken)
+    msg := tgbotapi.NewMessage(chatID, text)
+    msg.ParseMode = "HTML"
+    if mesID != 0 {
+        msg.ReplyToMessageID = mesID // ответ на конкретное сообщение
+    }
+    sent, err := bot.Send(msg)
+    return sent.MessageID, err
+    // Retry: до 3 попыток с паузой 1 сек
+}
+```
+
+**Параметры тела:**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `chat_id` | int64 | ID чата или канала |
+| `text` | string | HTML-текст сообщения |
+| `parse_mode` | string | `"HTML"` |
+| `reply_to_message_id` | int | Опционально: ID сообщения для ответа |
+
+**Ответ:** возвращает `MessageID` отправленного сообщения (используется для последующего удаления).
+
+#### POST /bot{token}/deleteMessage
+
+Прямой HTTP-запрос (без библиотеки):
+
+```go
+func delMessage(chatID, messageID string) {
+    url := fmt.Sprintf("https://api.telegram.org/bot%s/deleteMessage", BotToken)
+    body, _ := json.Marshal(map[string]string{
+        "chat_id":    chatID,
+        "message_id": messageID,
+    })
+    http.Post(url, "application/json", bytes.NewBuffer(body))
+}
+```
+
+#### GET /bot{token}/getUpdates (long polling)
+
+```go
+// Через библиотеку: таймаут 60 сек
+u := tgbotapi.NewUpdate(0)
+u.Timeout = 60
+updates := bot.GetUpdatesChan(u)
+// Внутри библиотека вызывает:
+// GET https://api.telegram.org/bot<TOKEN>/getUpdates?timeout=60&offset=<N>
+
+for update := range updates {
+    if update.Message != nil {
+        switch update.Message.Command() {
+        case "start":   // ...
+        case "stop":    // ...
+        }
+    }
+}
+```
