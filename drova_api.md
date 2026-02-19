@@ -771,3 +771,51 @@ class ProductInfo(BaseModel):
 | [drova-vm-watch_fork1](https://github.com/AALagutin/drova-vm-watch_fork1) | Python (requests) + JS (userscripts) | `/token-verifier/renewProxyToken`, `/session-manager/sessions`, `/server-manager/servers/{id}`, `/server-manager/servers/{id}/set_published/{value}`, `/server-manager/servers/server_names`, `/product-manager/product/listfull2` |
 | [Drova-Session-INFO_Fork1](https://github.com/AALagutin/Drova-Session-INFO_Fork1) | Go (net/http) | `/server-manager/servers`, `/session-manager/sessions`, `/product-manager/product/listfull2` |
 | [steambulkvalidate_fork1](https://github.com/AALagutin/steambulkvalidate_fork1) | Python | — (локальная утилита Steam, Drova API не использует) |
+| [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) | Go (net/http) | — (Drova API не использует; сессии определяет по процессу `ese.exe` и TCP-порту 7990; внешний вызов только `ipinfo.io`) |
+
+---
+
+## Сопутствующие внешние API
+
+### ipinfo.io — геолокация IP
+
+Используется в [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) для определения города, региона и провайдера подключающегося игрока.
+
+**Метод:** `GET`
+**URL:** `https://ipinfo.io/{ip}/json`
+**Auth:** нет
+**Параметры:** IP-адрес клиента в пути URL
+
+**Пример ответа:**
+```json
+{
+  "ip": "1.2.3.4",
+  "city": "Moscow",
+  "region": "Moscow",
+  "org": "AS12345 Example ISP"
+}
+```
+
+**Пример использования** (`main.go`):
+```go
+type IPInfoResponse struct {
+    IP     string `json:"ip"`
+    City   string `json:"city"`
+    Region string `json:"region"`
+    ISP    string `json:"org"`
+}
+
+func ipInfo(ip string) (city, region, isp string) {
+    apiURL := fmt.Sprintf("https://ipinfo.io/%s/json", ip)
+    resp, err := http.Get(apiURL)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer resp.Body.Close()
+    var info IPInfoResponse
+    json.NewDecoder(resp.Body).Decode(&info)
+    return info.City, info.Region, info.ISP
+}
+```
+
+Вызывается после того, как нотификатор принял входящее TCP-соединение на порт `7990` и получил IP игрока.
