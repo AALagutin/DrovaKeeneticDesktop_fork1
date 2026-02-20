@@ -26,6 +26,14 @@ X-Auth-Token: <token>
 | 10 | server-manager | POST | [`/server-manager/servers/public/web`](#10-post-server-managerserverspublicweb) | ❌ |
 | 11 | server-manager | GET | [`/server-manager/product/get/{product_id}`](#11-get-server-managerproductgetproduct_id) | ✅ |
 | 12 | product-manager | GET | [`/product-manager/product/listfull2`](#12-get-product-managerproductlistfull2) | ❌ |
+| 13 | accounting | GET | [`/accounting/statistics/most_popular_games`](#13-get-accountingstatisticsmost_popular_games) | ❌ |
+| 14 | accounting | GET | [`/accounting/statistics/myserverusageprepared`](#14-get-accountingstatisticsmyserverusageprepared) | ✅ |
+| 15 | accounting | GET | [`/accounting/unpayedstats/{user_id}`](#15-get-accountingunpayedstatsuser_id) | ✅ |
+| 16 | geo | GET | [`/geo/byprefix`](#16-get-geobyprefix) | ❌ |
+| 17 | server-manager | GET | [`/server-manager/serverproduct/list4edit2/{server_id}/{product_id}`](#17-get-server-managerserverproductlist4edit2server_idproduct_id) | ✅ |
+| 18 | server-manager | POST | [`/server-manager/serverproduct/add/{server_id}/{product_id}`](#18-post-server-managerserverproductaddserver_idproduct_id) | ✅ |
+| 19 | server-manager | POST | [`/server-manager/serverproduct/set_enabled/{server_id}/{product_id}/{value}`](#19-post-server-managerserverproductset_enabledserver_idproduct_idvalue) | ✅ |
+| 20 | server-manager | POST | [`/server-manager/serverproduct/update`](#20-post-server-managerserverproductupdate) | ✅ |
 
 ---
 
@@ -446,7 +454,9 @@ def set_station_published(published: bool):
 
 ## 7. GET /server-manager/serverproduct/list4edit2/{server_id}
 
-Получить список продуктов (игр), настроенных на конкретной станции, с возможностью редактирования. Показывает статус включённости/публикации каждой игры.
+Получить список всех продуктов (игр), настроенных на конкретной станции, с возможностью редактирования. Показывает статус включённости/публикации каждой игры.
+
+> Для получения конфигурации одной конкретной игры на станции используйте вариант с двумя path-параметрами: [`/server-manager/serverproduct/list4edit2/{server_id}/{product_id}`](#17-get-server-managerserverproductlist4edit2server_idproduct_id) (эндпоинт 17).
 
 **Заголовки:**
 ```
@@ -708,11 +718,15 @@ if product.use_default_desktop or product.product_id == UUID_DESKTOP:
 
 ## 12. GET /product-manager/product/listfull2
 
-Публичный каталог всех продуктов (игр) платформы Drova. Аутентификация не требуется.
+Публичный каталог всех продуктов (игр) платформы Drova. Аутентификация не требуется (но принимается).
 
-**Заголовки:** нет
+**Заголовки:** нет (опционально `X-Auth-Token`)
 
-**Параметры:** нет
+**Query-параметры (опциональны):**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `limit` | integer | Максимальное число продуктов в ответе; по умолчанию возвращает все (~1.4 MB). Пример: `?limit=100` |
 
 **Пример ответа:**
 ```json
@@ -773,6 +787,202 @@ if (PRODUCTS_RE.test(url)) {
 
 ---
 
+## 13. GET /accounting/statistics/most_popular_games
+
+Публичная статистика — самые популярные игры на платформе Drova. Аутентификация не требуется.
+
+**Заголовки:** нет
+
+**Параметры:** нет
+
+**Ответ:** ~3.7 KB (тела ответов в HAR-дампе отсутствуют; предположительно список игр с числом сессий).
+
+**Источник:** наблюдается в HAR-дампах `Drova_har_v2.txt` и `drova_har_reg_file.txt` (запросы из веб-дашборда `drova.io/merchant`).
+
+---
+
+## 14. GET /accounting/statistics/myserverusageprepared
+
+Статистика использования станций текущего мерчанта. Возвращает объёмные данные (77 KB).
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+```
+
+**Query-параметры:** неизвестны (не зафиксированы в HAR).
+
+**Ответ:** ~77 KB (тела ответов в HAR-дампе отсутствуют; вероятно, временные ряды по сессиям/выручке).
+
+**Источник:** HAR-дамп `Drova_har_v2.txt`.
+
+---
+
+## 15. GET /accounting/unpayedstats/{user_id}
+
+Неоплаченный остаток / незакрытые начисления для указанного пользователя.
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+```
+
+**Path-параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `user_id` | string (UUID) | UUID мерчанта/пользователя |
+
+**Ответ:** ~27 байт (возможно число или `{"amount": 0}`; точная схема неизвестна — тело ответа отсутствует в HAR).
+
+**Источник:** HAR-дамп `Drova_har_v2.txt`.
+
+---
+
+## 16. GET /geo/byprefix
+
+Автодополнение географических локаций по вводимому тексту. Аутентификация не требуется. Используется в UI при выборе/настройке региона станции.
+
+**Заголовки:** нет
+
+**Query-параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `prefix` | string | Начало названия города/региона для поиска |
+
+**Пример запроса:**
+```
+GET https://services.drova.io/geo/byprefix?prefix=Моск
+```
+
+**Ответ:** ~114 байт (предположительно массив строк или объектов `{name, id}`; точная схема неизвестна — тело ответа отсутствует в HAR).
+
+**Источник:** HAR-дамп `Drova_har_v2.txt`.
+
+---
+
+## 17. GET /server-manager/serverproduct/list4edit2/{server_id}/{product_id}
+
+Получить конфигурацию конкретной игры на конкретной станции (вариант эндпоинта 7 с двумя path-параметрами).
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+```
+
+**Path-параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `server_id` | string (UUID) | UUID станции |
+| `product_id` | string (UUID) | UUID игры/продукта |
+
+**Ответ:** содержит конфигурацию одной записи (аналогично элементу массива из эндпоинта 7 — поля `productId`, `enabled`, `verified`, `game_path`, `work_path`, `allowed_paths`, `args` и т.д.; точная схема неизвестна — тело ответа отсутствует в HAR).
+
+**Источник:** HAR-дамп `Drova_har_v2.txt`.
+
+---
+
+## 18. POST /server-manager/serverproduct/add/{server_id}/{product_id}
+
+Добавить игру (продукт) к станции — создать запись `serverproduct`.
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+```
+
+**Path-параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `server_id` | string (UUID) | UUID станции |
+| `product_id` | string (UUID) | UUID игры для добавления |
+
+**Тело запроса:** пустое (параметры передаются в path).
+
+**Ответ:** HTTP 200 (тело ответа отсутствует в HAR; предположительно созданный объект `serverproduct`).
+
+**Источник:** HAR-дамп `Drova_har_v2.txt`.
+
+---
+
+## 19. POST /server-manager/serverproduct/set_enabled/{server_id}/{product_id}/{value}
+
+Включить или отключить доступность игры на станции (без снятия с публикации). Самый часто вызываемый эндпоинт в HAR — 562 запроса.
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+```
+
+**Path-параметры:**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `server_id` | string (UUID) | UUID станции |
+| `product_id` | string (UUID) | UUID игры |
+| `value` | boolean (`true`/`false`) | `true` — включить, `false` — отключить |
+
+**Тело запроса:** пустое.
+
+**Пример:**
+```
+POST https://services.drova.io/server-manager/serverproduct/set_enabled/00df3618-de85-44ab-90fd-dba52ac12440/39251d85-c1d8-4df7-9d2e-15f686039f04/true
+```
+
+**Ответ:** HTTP 200 (тело ответа отсутствует в HAR).
+
+> Отличие от эндпоинта 6 (`/servers/{id}/set_published/{value}`): эндпоинт 6 управляет **публичностью всей станции**, эндпоинт 19 управляет **доступностью конкретной игры на станции**.
+
+**Источник:** HAR-дамп `Drova_har_v2.txt` (562 запроса — наиболее используемый эндпоинт в сессии).
+
+---
+
+## 20. POST /server-manager/serverproduct/update
+
+Обновить конфигурацию игры на станции: пути, аргументы запуска, статус верификации.
+
+**Заголовки:**
+```
+X-Auth-Token: <token>
+Content-Type: application/json
+```
+
+**Тело запроса (JSON):**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `server_id` | string (UUID) | UUID станции |
+| `product_id` | string (UUID) | UUID игры |
+| `verified` | string | Статус верификации: `"READY"`, `"NOT_READY"` и т.д. |
+| `enabled` | boolean | Включена ли игра на станции |
+| `game_path` | string \| null | Путь к исполняемому файлу игры |
+| `work_path` | string \| null | Рабочая директория (или `null`) |
+| `allowed_paths` | array \| null | Дополнительные разрешённые пути (или `null`) |
+| `args` | string \| null | Аргументы командной строки (или `null`) |
+
+**Пример тела:**
+```json
+{
+  "server_id": "00df3618-de85-44ab-90fd-dba52ac12440",
+  "product_id": "39251d85-c1d8-4df7-9d2e-15f686039f04",
+  "verified": "READY",
+  "enabled": false,
+  "game_path": "C:\\Program Files (x86)\\Steam\\Steam.exe",
+  "work_path": null,
+  "allowed_paths": null,
+  "args": null
+}
+```
+
+**Ответ:** HTTP 200 (тело ответа отсутствует в HAR; вероятно, обновлённый объект `serverproduct`).
+
+**Источник:** HAR-дампы `Drova_har_v2.txt` и `drova_har_reg_file.txt`.
+
+---
+
 ## Модели данных
 
 ### SessionsEntity
@@ -819,6 +1029,7 @@ class ProductInfo(BaseModel):
 | [steambulkvalidate_fork1](https://github.com/AALagutin/steambulkvalidate_fork1) | Python | — (локальная утилита Steam, Drova API не использует) |
 | [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) | Go (net/http) | — (Drova API не использует; сессии определяет по процессу `ese.exe` и TCP-порту 7990; внешний вызов только `ipinfo.io`) |
 | [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) | Go (net/http) | `/session-manager/sessions`, `/product-manager/product/listfull2`; + `ipinfo.io`, `LibreHardwareMonitor`, `GeoLite2/GitHub`, `Telegram Bot API` |
+| HAR-дампы `Drova_har_v2.txt` / `drova_har_reg_file.txt` | Browser HAR (Chrome DevTools) | 659 запросов к `services.drova.io`; дали **8 новых эндпоинтов** (#13–#20); тела ответов в дампе отсутствуют |
 
 ---
 
