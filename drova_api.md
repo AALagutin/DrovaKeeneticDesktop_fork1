@@ -8,6 +8,8 @@ X-Auth-Token: <token>
 ```
 Токен получают из QR-кода в личном кабинете Drova, из Windows-реестра (`HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers`) или из файла `token.json`.
 
+Многие эндпоинты дополнительно принимают query-параметр `user_id` (UUID мерчанта), читаемый из реестра по пути `HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\{server_id}` → значение `user_id`.
+
 ---
 
 ## Оглавление
@@ -729,16 +731,37 @@ if product.use_default_desktop or product.product_id == UUID_DESKTOP:
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `limit` | integer | Максимальное число продуктов в ответе; по умолчанию возвращает все (~1.4 MB). Пример: `?limit=100` |
+| `user_id` | string (UUID) | UUID мерчанта; передаётся рядом с `X-Auth-Token` в некоторых клиентах |
 
-**Пример ответа:**
+**Пример ответа** (поля `requiredAccount` и `inShopUrl` раскрыты благодаря [DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync)):
 ```json
 [
   {
     "productId": "ffffffff-0000-1111-2222-333333333333",
-    "title": "Cyberpunk 2077"
+    "title": "Cyberpunk 2077",
+    "requiredAccount": "Steam",
+    "inShopUrl": "https://store.steampowered.com/app/1091500/"
+  },
+  {
+    "productId": "d5f88d94-87d5-11e7-bb31-000000003778",
+    "title": "Fortnite",
+    "requiredAccount": "Epic",
+    "inShopUrl": null
   }
 ]
 ```
+
+**Поля ответа:**
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `productId` | string (UUID) | Идентификатор продукта в Drova |
+| `title` | string | Название игры |
+| `requiredAccount` | string \| null | Необходимая платформа (`"Steam"`, `"Epic"`, `null` и т.д.) |
+| `inShopUrl` | string \| null | URL игры в магазине (Steam: `https://store.steampowered.com/app/{steamId}/`) |
+
+> Steam App ID извлекается из `inShopUrl` парсингом: `inShopUrl.split("/app/")[1].split("/")[0]`.
+> Для игр без `inShopUrl` используют ручной словарь соответствий (см. технику [Steam→Drova matching](#steam-локальные-данные-и-сопоставление-с-drova-catalogом)).
 
 ### Примеры использования
 
@@ -785,6 +808,28 @@ if (PRODUCTS_RE.test(url)) {
         productTitles[id] = p.title;
     }
 }
+```
+
+**[DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync)** (`drovaData.py`) — используется для сопоставления установленных Steam-игр с каталогом Drova:
+```python
+# Загрузка полного каталога с кешем 120 минут:
+fullGamesList = tryLoadGetData(
+    "fullList.json",
+    "https://services.drova.io/product-manager/product/listfull2",
+    cacheMinutes=120,
+    setIds=True   # парсит steamId из поля inShopUrl
+)
+
+# Извлечение Steam ID из inShopUrl:
+def fullListSetSteamIds(games):
+    for game in games:
+        if game["requiredAccount"] == "Steam" and game["inShopUrl"] \
+                and "steampowered.com/app/" in game["inShopUrl"]:
+            game["steamId"] = game["inShopUrl"].split("/app/")[1].split("/")[0]
+    return games
+
+# Скип дубля (Cyberpunk без DLC):
+SKIP_PRODUCT_ID = "c9af5926-118e-4c8b-87d4-204099ceb6fb"
 ```
 
 ---
@@ -902,11 +947,28 @@ X-Auth-Token: <token>
 | `server_id` | string (UUID) | UUID станции |
 | `product_id` | string (UUID) | UUID игры для добавления |
 
-**Тело запроса:** пустое (параметры передаются в path).
+**Query-параметры (опциональны):**
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `user_id` | string (UUID) | UUID мерчанта |
+
+**Тело запроса:** пустое (параметры передаются в path и query).
+
+**Пример** ([DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync), `drovaData.py`):
+```python
+url = f"https://services.drova.io/server-manager/serverproduct/add/{dvServerID}/{productId}"
+response = requests.post(
+    url,
+    params={"user_id": dvUserID},
+    headers={"X-Auth-Token": dvAuthToken},
+    timeout=2
+)
+```
 
 **Ответ:** HTTP 200 (тело ответа отсутствует в HAR; предположительно созданный объект `serverproduct`).
 
-**Источник:** HAR-дамп `Drova_har_v2.txt`.
+**Источник:** HAR-дамп `Drova_har_v2.txt`; [DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync).
 
 ---
 
@@ -1032,6 +1094,7 @@ class ProductInfo(BaseModel):
 | [DROVA_NOTIFIER_Fork1](https://github.com/AALagutin/DROVA_NOTIFIER_Fork1) | Go (net/http) | — (Drova API не использует; сессии определяет по процессу `ese.exe` и TCP-порту 7990; внешний вызов только `ipinfo.io`) |
 | [DrovaNotifierV2_Fork1](https://github.com/AALagutin/DrovaNotifierV2_Fork1) | Go (net/http) | `/session-manager/sessions`, `/product-manager/product/listfull2`; + `ipinfo.io`, `LibreHardwareMonitor`, `GeoLite2/GitHub`, `Telegram Bot API` |
 | HAR-дампы `Drova_har_v2.txt` / `drova_har_reg_file.txt` | Browser HAR (Chrome DevTools) | 659 запросов к `services.drova.io`; дали **8 новых эндпоинтов** (#13–#20); тела ответов в дампе отсутствуют |
+| [DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync) | Python (requests + vdf + pywin32) | `/product-manager/product/listfull2`, `/server-manager/serverproduct/list4edit2/{id}`, `/server-manager/serverproduct/add/{id}/{id}`; раскрыты поля `requiredAccount`, `inShopUrl`; техника Steam ACF-парсинга |
 
 ---
 
@@ -1574,3 +1637,120 @@ soundpad.exe, SoundpadService.exe
 | `WargamingAuthDiscard` | Wargaming | Удаление `user_info.xml` |
 
 Все файлы изменяются через SFTP (`asyncssh.start_sftp_client()`). Перед патчингом соответствующие процессы лаунчеров завершаются через `taskkill`.
+
+---
+
+### Steam локальные данные и сопоставление с Drova-каталогом
+
+Используется в [DTWO-Steam-to-Drova-games-sync](https://github.com/AALagutin/DTWO-Steam-to-Drova-games-sync) (`localData.py`, `drovaData.py`). Никаких HTTP-запросов к Steam API нет — все данные читаются с диска.
+
+#### Шаг 1: Путь к Steam из реестра
+
+```python
+# Windows Registry:
+key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam")
+steamFolder = winreg.QueryValueEx(key, "InstallPath")[0]
+# → например: "C:\Program Files (x86)\Steam"
+```
+
+#### Шаг 2: Все библиотеки Steam из VDF
+
+```python
+import vdf
+
+with open(os.path.join(steamFolder, "steamapps", "libraryfolders.vdf"), "r") as f:
+    steamLibraries = vdf.load(f)
+
+# libraryfolders.vdf содержит пути ко всем папкам Steam-библиотек:
+for key in steamLibraries["libraryfolders"].keys():
+    library = os.path.join(steamLibraries["libraryfolders"][key]["path"], "steamapps")
+    steamFolders.append(library)
+```
+
+#### Шаг 3: Список установленных игр из ACF-файлов
+
+```python
+# Каждая установленная игра имеет файл appmanifest_<id>.acf в папке steamapps:
+for filename in os.listdir(folder):
+    if filename.endswith(".acf"):
+        with open(os.path.join(folder, filename), "r") as f:
+            acf_data = vdf.load(f)
+            app_id  = acf_data["AppState"]["appid"]         # Steam App ID
+            name    = acf_data["AppState"]["name"]           # Название игры
+            size_gb = round(float(acf_data["AppState"]["SizeOnDisk"]) / 1073741824, 1)
+            auto_update = int(acf_data["AppState"]["AutoUpdateBehavior"])
+```
+
+**Поля ACF:**
+
+| Поле | Описание |
+|------|----------|
+| `appid` | Steam App ID (используется для сопоставления с Drova) |
+| `name` | Отображаемое имя игры |
+| `SizeOnDisk` | Размер в байтах (делим на 1 073 741 824 → GB) |
+| `AutoUpdateBehavior` | 0=авто, 1=только при запуске, 2=не обновлять |
+
+#### Шаг 4: Сопоставление Steam → Drova productId
+
+```python
+# В ответе /product-manager/product/listfull2 есть поле inShopUrl:
+# "https://store.steampowered.com/app/1091500/"
+# Из него извлекается Steam ID:
+for game in drovaFullGamesList:
+    if game["requiredAccount"] == "Steam" and game["inShopUrl"] \
+            and "steampowered.com/app/" in game["inShopUrl"]:
+        game["steamId"] = game["inShopUrl"].split("/app/")[1].split("/")[0]
+
+# Сопоставление: localGame["appid"] == drovaGame["steamId"]
+```
+
+**Ручной словарь для игр без `inShopUrl`:**
+```python
+manualIds = [
+    {"productId": "b6346f52-f780-42a9-98a2-1c7d6c4b4473", "title": "PlanetSide 2",              "steamId": "218230"},
+    {"productId": "7d628e11-0bb1-442c-98a4-8106176b13b8", "title": "The Walking Dead: Season Two","steamId": "261030"},
+]
+```
+
+#### Шаг 5: Игры не из Steam (hardcoded paths)
+
+Для игр Epic/HoYo/Wargaming/Battlestate проверяется существование exe-файла:
+```python
+localList = {
+    "Fortnite":        {"productId": "d5f88d94-87d5-11e7-bb31-000000003778",
+                        "exePaths": [r"C:\Program Files\Epic Games\Fortnite\...\FortniteClient-Win64-Shipping.exe"]},
+    "Genshin Impact":  {"productId": "b05acb00-93ab-4b6d-ab6c-792f72e43665",
+                        "exePaths": [r"C:\Program Files\HoYoPlay\games\Genshin Impact game\GenshinImpact.exe"]},
+    "Escape from Tarkov": {"productId": "cdb6d8f4-6b6f-4f92-a240-56447ed9b42d",
+                        "exePaths": [r"c:\Battlestate Games\EFT\EscapeFromTarkov.exe"]},
+    # ... и другие
+}
+# Wargaming/Lesta — парсинг game_info.xml для версии
+```
+
+**Известные Drova product UUID для non-Steam игр:**
+
+| Игра | productId |
+|------|-----------|
+| Fortnite | `d5f88d94-87d5-11e7-bb31-000000003778` |
+| Honkai: Star Rail | `5e3c271e-da2a-4898-a420-9b49d74f2695` |
+| Genshin Impact | `b05acb00-93ab-4b6d-ab6c-792f72e43665` |
+| Zenless Zone Zero | `0864eddb-d20d-437d-a322-329ccda51ad0` |
+| Wuthering Waves | `934386db-5b9e-4635-ab70-59d02b6a988d` |
+| Escape from Tarkov | `cdb6d8f4-6b6f-4f92-a240-56447ed9b42d` |
+| Escape from Tarkov Arena | `1b4253f2-11ae-4d14-92aa-b506a18cf247` |
+| Мир кораблей (RU) | `21d8c648-8d39-4b3f-8989-69d58fbe7dff` |
+| World of Warships (EU) | `21d8c648-8d39-4b3f-8989-69d58fbe7e00` |
+| Мир танков (RU) | `d5f88d94-87d5-11e7-bb31-000000002432` |
+| World of Tanks (EU) | `c1661a7c-4950-4346-a193-103fb385b6d6` |
+| Cyberpunk 2077 (без DLC, дубль — **пропускать**) | `c9af5926-118e-4c8b-87d4-204099ceb6fb` |
+
+#### Кеш-стратегия (файловый JSON-кеш)
+
+| Данные | Файл | TTL |
+|--------|------|-----|
+| Локальный список игр | `localGamesList.json` | 5 мин |
+| Список игр станции | `{server_id}.json` | 10 мин |
+| Полный каталог Drova | `fullList.json` | 120 мин |
+
+При сетевой ошибке — fallback на устаревший кеш без TTL.
