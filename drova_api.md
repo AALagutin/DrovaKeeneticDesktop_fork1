@@ -137,7 +137,7 @@ X-Auth-Token: <token>
 | Параметр | Тип | Описание |
 |----------|-----|----------|
 | `server_id` | string (UUID) | Фильтр по станции |
-| `status` | string | Фильтр по статусу; можно передавать несколько раз |
+| `state` | string | Фильтр по статусу; можно передавать несколько раз (`state=NEW&state=HANDSHAKE`). В коде дашборда встречается также вариант `status` |
 | `limit` | integer | Максимальное число сессий в ответе |
 | `merchant_id` | string (UUID) | Фильтр по мерчанту |
 
@@ -196,6 +196,8 @@ async def get_new_session(server_id: str, auth_token: str):
             data = SessionsResponse(**await resp.json())
             return data.sessions[0] if data.sessions else None
 ```
+
+> ⚠️ **Опечатка в репозитории:** параметр передаётся как `data={"serveri_id": server_id}` (лишняя `i`) через aiohttp `data=` вместо `params=`. В реальных запросах этот параметр, вероятно, не уходит в URL — фактически возвращаются все сессии без фильтра по серверу.
 
 **[drova-telegram-server-info-fork1](https://github.com/AALagutin/drova-telegram-server-info-fork1)** (`api.py`) — sync Python (requests):
 ```python
@@ -1021,7 +1023,7 @@ class ProductInfo(BaseModel):
 
 | Репозиторий | Язык | Основные эндпоинты |
 |-------------|------|-------------------|
-| [DrovaKeeneticDesktop_fork1](https://github.com/AALagutin/DrovaKeeneticDesktop_fork1) | Python (aiohttp) | `/session-manager/sessions`, `/server-manager/product/get/{id}` |
+| [DrovaKeeneticDesktop_fork1](https://github.com/AALagutin/DrovaKeeneticDesktop_fork1) | Python (aiohttp + asyncssh) | `/session-manager/sessions` (state=NEW/HANDSHAKE), `/server-manager/product/get/{id}`; TCP-прокси порт 7985; SSH-управление Windows (Shadow Defender, патчи реестра, очистка лаунчеров) |
 | [drova-telegram-server-info-fork1](https://github.com/AALagutin/drova-telegram-server-info-fork1) | Python (requests) | `/accounting/myaccount`, `/session-manager/sessions`, `/server-manager/servers`, `/server-manager/serverproduct/list4edit2/{id}`, `/server-manager/serverendpoint/list/{id}`, `/product-manager/product/listfull2` |
 | [drova-dash](https://github.com/AALagutin/drova-dash) | Python (requests + Streamlit) | `/server-manager/servers/public/web`, `/product-manager/product/listfull2` |
 | [drova-vm-watch_fork1](https://github.com/AALagutin/drova-vm-watch_fork1) | Python (requests) + JS (userscripts) | `/token-verifier/renewProxyToken`, `/session-manager/sessions`, `/server-manager/servers/{id}`, `/server-manager/servers/{id}/set_published/{value}`, `/server-manager/servers/server_names`, `/product-manager/product/listfull2` |
@@ -1385,3 +1387,190 @@ for update := range updates {
     }
 }
 ```
+
+---
+
+### TCP-прокси к Windows-серверу Drova (порт 7985)
+
+Используется в [DrovaKeeneticDesktop_fork1](https://github.com/AALagutin/DrovaKeeneticDesktop_fork1) (`drova_socket.py`, `drova_server_binary.py`). Linux-хост (Keenetic/роутер) принимает входящие TCP-соединения от клиента Drova и прозрачно проксирует их на Windows-игровую машину.
+
+**Порты:**
+
+| Направление | Адрес | Порт | Источник |
+|-------------|-------|------|---------|
+| Входящий (от клиента Drova) | `0.0.0.0` | `$DROVA_SOCKET_LISTEN` | env var |
+| Исходящий (к Windows-серверу) | `$WINDOWS_HOST` | `7985` | hardcoded |
+
+**Протокол бинарного подтверждения:**
+
+Windows-сервер Drova при готовности посылает байт `\x01`. DrovaSocket ждёт его перед тем, как выполнять SSH-логику подготовки станции:
+
+```python
+# drova_server_binary.py
+BLOCK_SIZE = 4096
+
+async def server_need_reply(reader, writer, is_answered: Future):
+    while True:
+        readed_bytes = await reader.read(BLOCK_SIZE)
+        if b"\x01" in readed_bytes and not found_answer:
+            found_answer = True
+            is_answered.set_result(True)   # сервер подтвердил готовность
+        writer.write(readed_bytes)
+        await writer.drain()
+```
+
+**Запуск сервера** (`drova_socket.py`):
+```python
+# Слушаем на 0.0.0.0:DROVA_SOCKET_LISTEN, лимит 1 соединение
+self.server = await asyncio.start_server(
+    self.server_accept, "0.0.0.0", self.drova_socket_listen, limit=1
+)
+
+async def server_accept(self, reader, writer):
+    # Открываем исходящее соединение к Windows:
+    target_socket = await asyncio.open_connection(self.windows_host, 7985)
+    drova_pass = DrovaBinaryProtocol(Socket(reader, writer), Socket(*target_socket))
+    if await drova_pass.wait_server_answered():
+        await self._run_server_acked()  # SSH → BeforeConnect → Wait → AfterDisconnect
+```
+
+> Аналог V1 (DROVA_NOTIFIER, порт 7990) — там порт использовался пассивно для захвата IP игрока. Здесь (DrovaKeeneticDesktop) — активный TCP-прокси для ретрансляции игрового трафика.
+
+---
+
+### Архитектура DrovaKeeneticDesktop_fork1 — два режима работы
+
+#### Режим poll (drova_poll)
+
+Периодически опрашивает Drova API. Подходит когда TCP-прокси не нужен.
+
+```
+loop:
+  SSH → Windows
+  ├── CheckDesktop()      # GET /session-manager/sessions → /server-manager/product/get/{id}
+  │   └── is_desktop_session?
+  ├── [нет] WaitNewDesktopSession()   # poll раз в 1 сек
+  └── [да]  BeforeConnect()           # Shadow Defender + патчи
+             WaitFinishOrAbort()      # poll раз в 1 сек
+             AfterDisconnect()        # выход из Shadow Defender + reboot
+  sleep(1)
+```
+
+#### Режим socket (drova_socket)
+
+Срабатывает при входящем TCP-соединении на `DROVA_SOCKET_LISTEN`:
+
+```
+client → TCP:DROVA_SOCKET_LISTEN
+  │
+  ├── open_connection(WINDOWS_HOST, 7985)
+  ├── proxy traffic (binary passthrough, 4096 bytes/chunk)
+  ├── wait \x01 from Windows server
+  └── if answered:
+        SSH → Windows
+        CheckDesktop() → BeforeConnect() → WaitFinishOrAbort() → AfterDisconnect()
+```
+
+#### Проверка «десктопной сессии»
+
+UUID продукта `9fd0eb43-b2bb-4ce3-93b8-9df63f209098` зарезервирован за стандартным рабочим столом Windows. Если `product_id` сессии совпадает с ним — сессия десктопная без дополнительного API-запроса. Иначе делается запрос к `/server-manager/product/get/{product_id}` и проверяется поле `use_default_desktop`.
+
+```python
+UUID_DESKTOP = UUID("9fd0eb43-b2bb-4ce3-93b8-9df63f209098")
+
+async def check_desktop_session(self, session: SessionsEntity) -> bool:
+    if session.product_id == UUID_DESKTOP:
+        return True
+    product_info = await get_product_info(session.product_id, auth_token=...)
+    return product_info.use_default_desktop
+```
+
+---
+
+### SSH-управление Windows-станцией
+
+DrovaKeeneticDesktop_fork1 управляет Windows-машиной через SSH (библиотека `asyncssh`). Кодировка — `windows-1251` для совместимости с локалью Windows.
+
+**Конфигурация подключения** (из `.env`):
+
+| Переменная | Пример | Описание |
+|-----------|--------|----------|
+| `WINDOWS_HOST` | `192.168.0.10` | IP Windows-машины |
+| `WINDOWS_LOGIN` | `Administrator` | Логин SSH |
+| `WINDOWS_PASSWORD` | `VeryStrongPassword` | Пароль SSH |
+| `DROVA_SOCKET_LISTEN` | `7985` | Порт TCP-сервера на Linux |
+| `SHADOW_DEFENDER_PASSWORD` | `ReallyVeryStrongPassword` | Пароль Shadow Defender CLI |
+| `SHADOW_DEFENDER_DRIVES` | `CDE` | Буквы дисков для защиты снапшотом |
+
+**Получение токена Drova из реестра** (`commands.py`):
+```python
+# Команда запускается на Windows через SSH:
+# reg query HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers /s /f auth_token
+
+r_auth_token = re.compile(r"auth_token\s+REG_SZ\s+(?P<auth_token>\S+)", re.MULTILINE)
+r_servers    = re.compile(r"servers\\(?P<server_id>\S+)", re.MULTILINE)
+```
+
+Токен кешируется в `ExpiringDict` с TTL 60 секунд.
+
+---
+
+### Shadow Defender — снапшот-защита Windows
+
+[Shadow Defender](https://www.shadow-defender.com/) создаёт снапшот файловой системы. Все изменения за сессию (файлы, реестр) откатываются при выходе из режима.
+
+**CLI-обёртка** (`commands.py`, `ShadowDefenderCLI`):
+
+```
+C:\Program Files\Shadow Defender\CmdTool.exe /pwd:"<пароль>" /enter:CDE /now
+C:\Program Files\Shadow Defender\CmdTool.exe /pwd:"<пароль>" /exit:CDE /reboot /now
+```
+
+| Действие | Команда | Момент вызова |
+|----------|---------|---------------|
+| Включить снапшот | `/enter:<диски>` | `BeforeConnect` (до начала сессии) |
+| Выключить и откатить | `/exit:<диски>` | `AfterDisconnect` (после сессии) |
+| Перезагрузить | `/reboot` | `AfterDisconnect` (после выхода из снапшота) |
+| Применить изменения | `/commit:<диск>` | — (не используется в основном флоу) |
+| Показать статус | `/list` | `drova_validate` (проверка пароля) |
+
+---
+
+### Патчи Windows-окружения перед сессией
+
+Применяются в `BeforeConnect` (`patch.py`) через `reg add` по SSH. Цель — изолировать игрока от системных инструментов.
+
+**Ограничения реестра (`PatchWindowsSettings`):**
+
+| Ключ реестра | Параметр | Значение | Эффект |
+|-------------|---------|---------|--------|
+| `HKCU\...\Windows\System` | `DisableCMD` | `2` | Запрет CMD |
+| `HKCU\...\Policies\System` | `DisableTaskMgr` | `1` | Запрет Task Manager |
+| `HKCU\...\Windows Script Host` | `Enabled` | `0` | Запрет VBScript |
+| `HKCU\...\Policies\Explorer` | `NoClose` | `1` | Запрет выключения |
+| `HKLM\...\Policies\System` | `HideFastUserSwitching` | `1` | Скрыть смену пользователя |
+
+**Блокировка исполняемых файлов** (через реестр `DisallowRun`):
+```
+regedit.exe, powershell.exe, powershell_ise.exe, mmc.exe, gpedit.msc
+perfmon.exe, anydesk.exe, rustdesk.exe
+ProcessHacker.exe, procexp.exe, procexp64.exe, autoruns.exe
+soundpad.exe, SoundpadService.exe
+```
+
+После применения патчей: `gpupdate /target:user /force` + перезапуск `explorer.exe`.
+
+---
+
+### Удаление токенов игровых лаунчеров перед сессией
+
+Применяется в `BeforeConnect` (`patch.py`). Удаляет сохранённые данные авторизации, чтобы предыдущий игрок не оставил доступ к своим аккаунтам.
+
+| Патч | Лаунчер | Действие |
+|------|---------|---------|
+| `EpicGamesAuthDiscard` | Epic Games | Очистка `GameUserSettings.ini` |
+| `SteamAuthDiscard` | Steam | Очистка `loginusers.vdf` |
+| `UbisoftAuthDiscard` | Ubisoft Connect | Удаление `ConnectSecureStorage.dat` и `user.dat` |
+| `WargamingAuthDiscard` | Wargaming | Удаление `user_info.xml` |
+
+Все файлы изменяются через SFTP (`asyncssh.start_sftp_client()`). Перед патчингом соответствующие процессы лаунчеров завершаются через `taskkill`.
