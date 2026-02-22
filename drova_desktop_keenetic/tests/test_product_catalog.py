@@ -38,6 +38,20 @@ def test_get_unknown_product(catalog_path):
     """Unknown product returns None."""
     catalog = ProductCatalog(catalog_path)
     assert catalog.get_use_default_desktop(UUID("99999999-9999-9999-9999-999999999999")) is None
+    assert catalog.get_title(UUID("99999999-9999-9999-9999-999999999999")) is None
+
+
+def test_get_title(catalog_path):
+    """get_title returns stored title after set_use_default_desktop."""
+    pid = UUID("11111111-1111-1111-1111-111111111111")
+    catalog = ProductCatalog(catalog_path)
+    catalog.set_use_default_desktop(pid, "Cyberpunk 2077", True)
+
+    assert catalog.get_title(pid) == "Cyberpunk 2077"
+
+    # Title survives reload from file
+    catalog2 = ProductCatalog(catalog_path)
+    assert catalog2.get_title(pid) == "Cyberpunk 2077"
 
 
 def test_needs_refresh_fresh(catalog_path):

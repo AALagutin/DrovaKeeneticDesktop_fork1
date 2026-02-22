@@ -37,8 +37,8 @@ HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\85dd80c4-adc1-1111-1111-111111111
     await helper.refresh_actual_tokens()
     assert client.run.call_count == 1
 
-    is_desktop = await helper.run()
-    assert is_desktop is False
+    session = await helper.run()
+    assert session is None
 
 
 @pytest.mark.asyncio
