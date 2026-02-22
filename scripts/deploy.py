@@ -49,6 +49,7 @@ class HostEntry:
     host: str
     login: str
     password: str
+    sd_password: str = ""
 
 
 @dataclass
@@ -87,6 +88,7 @@ def _hosts_from_json(path: str) -> list[HostEntry]:
     defaults = data.get("defaults", {})
     login = defaults.get("login", os.environ.get("WINDOWS_LOGIN", ""))
     password = defaults.get("password", os.environ.get("WINDOWS_PASSWORD", ""))
+    sd_password = defaults.get("shadow_defender_password", "")
     entries = []
     for i, h in enumerate(data["hosts"]):
         entries.append(HostEntry(
@@ -94,6 +96,7 @@ def _hosts_from_json(path: str) -> list[HostEntry]:
             host=h["host"],
             login=h.get("login", login),
             password=h.get("password", password),
+            sd_password=h.get("shadow_defender_password", sd_password),
         ))
     return entries
 
@@ -215,8 +218,9 @@ def _run_ps1(host: str, login: str, password: str, extra_args: str) -> tuple[int
 # Per-host orchestration
 # ---------------------------------------------------------------------------
 
-def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, extra_args: str) -> DeployResult:
+def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace) -> DeployResult:
     label = f"[{host_entry.name} / {host_entry.host}]"
+    extra_args = _build_extra_args(args, host_entry.sd_password)
     try:
         print(f"{label} Uploading setup script via SMB...", flush=True)
         _upload_ps1(host_entry.host, host_entry.login, host_entry.password, ps1_bytes)
@@ -279,14 +283,16 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _build_extra_args(args: argparse.Namespace) -> str:
+def _build_extra_args(args: argparse.Namespace, sd_password: str = "") -> str:
     parts = []
     if args.skip_ffmpeg:
         parts.append("-SkipFFmpeg")
     if args.sd_installer:
         parts.append(f'-ShadowDefenderInstaller "{args.sd_installer}"')
-    if args.sd_password:
-        parts.append(f'-ShadowDefenderPassword "{args.sd_password}"')
+    # CLI --sd-password takes precedence over per-host config value
+    effective_sd_pwd = args.sd_password or sd_password
+    if effective_sd_pwd:
+        parts.append(f'-ShadowDefenderPassword "{effective_sd_pwd}"')
     return " ".join(parts)
 
 
@@ -302,14 +308,13 @@ def main() -> None:
     ps1_bytes = raw if raw.startswith(_UTF8_BOM) else _UTF8_BOM + raw
     filter_ips = [ip.strip() for ip in args.hosts.split(",")] if args.hosts else None
     hosts = load_hosts(filter_ips)
-    extra_args = _build_extra_args(args)
 
     print(f"\nDeploying to {len(hosts)} host(s) with parallelism={args.parallel}")
     print("=" * 60)
 
     results: list[DeployResult] = []
     with ThreadPoolExecutor(max_workers=args.parallel) as pool:
-        futures = {pool.submit(deploy_one, h, ps1_bytes, extra_args): h for h in hosts}
+        futures = {pool.submit(deploy_one, h, ps1_bytes, args): h for h in hosts}
         for future in as_completed(futures):
             result = future.result()
             results.append(result)
