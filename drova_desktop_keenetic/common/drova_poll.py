@@ -129,6 +129,13 @@ class DrovaPollWorker:
         )
         await after.run()
 
+        # If the PC did not reboot (non-desktop session or SD-less flow) and
+        # always_on is active, restore the idle stream while the connection
+        # is still alive.  If the PC *did* reboot, this call raises an
+        # OSError/SSH exception which the polling() loop catches and ignores.
+        if self._streaming_always_on:
+            await self._start_idle_stream(conn)
+
     async def _maybe_cleanup_restrictions(self, conn) -> None:
         """If restrictions from a previous interrupted session are still active, remove them."""
         cleanup = CleanupRestrictions(conn)
