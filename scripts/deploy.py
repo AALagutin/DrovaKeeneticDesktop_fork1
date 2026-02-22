@@ -374,7 +374,13 @@ def main() -> None:
     total = len(results)
     color_on  = "\033[32m" if ok_count == total else "\033[31m"
     color_off = "\033[0m"
-    print(f"  {color_on}{ok_count}/{total} hosts set up successfully.{color_off}")
+    if args.uninstall_sd:
+        action_summary = "uninstalled Shadow Defender on"
+    elif args.remove_restrictions:
+        action_summary = "removed restrictions on"
+    else:
+        action_summary = "set up"
+    print(f"  {color_on}{ok_count}/{total} hosts {action_summary} successfully.{color_off}")
     print()
     if ok_count < total:
         sys.exit(1)

@@ -121,7 +121,7 @@ foreach ($svc in @("FDResPub", "SSDPSRV", "fdPHost")) {
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "  Running gpupdate /force ..." -ForegroundColor White
-& gpupdate.exe /target:user /force /quiet 2>&1 | Out-Null
+& gpupdate.exe /target:user /force 2>&1 | Out-Null
 Write-Host "    gpupdate done." -ForegroundColor Green
 
 Write-Host ""
