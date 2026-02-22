@@ -222,8 +222,9 @@ def _run_ps1(host: str, login: str, password: str, extra_args: str) -> tuple[int
 def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace) -> DeployResult:
     label = f"[{host_entry.name} / {host_entry.host}]"
     extra_args = "" if args.uninstall_sd else _build_extra_args(args, host_entry.sd_password)
+    action_label = "Uninstalling Shadow Defender" if args.uninstall_sd else "setup script"
     try:
-        print(f"{label} Uploading setup script via SMB...", flush=True)
+        print(f"{label} Uploading {action_label} via SMB...", flush=True)
         _upload_ps1(host_entry.host, host_entry.login, host_entry.password, ps1_bytes)
     except Exception as exc:
         return DeployResult(
@@ -231,8 +232,9 @@ def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace
             success=False, output="", error=f"Upload failed: {exc}",
         )
 
+    exec_hint = "(SD uninstall + reboot required)" if args.uninstall_sd else "(may take 5-10 min: OpenSSH + PsExec + FFmpeg + SD)"
     try:
-        print(f"{label} Executing (may take 5-10 min: OpenSSH + PsExec + FFmpeg + SD)...", flush=True)
+        print(f"{label} Executing {exec_hint}...", flush=True)
         rc, out, err = _run_ps1(host_entry.host, host_entry.login, host_entry.password, extra_args)
         return DeployResult(
             name=host_entry.name, host=host_entry.host,
