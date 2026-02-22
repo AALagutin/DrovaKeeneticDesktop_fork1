@@ -8,6 +8,7 @@ from expiringdict import ExpiringDict  # type: ignore
 
 from drova_desktop_keenetic.common.after_disconnect import AfterDisconnect
 from drova_desktop_keenetic.common.before_connect import BeforeConnect
+from drova_desktop_keenetic.common.cleanup_restrictions import CleanupRestrictions
 from drova_desktop_keenetic.common.drova import DrovaApiClient
 from drova_desktop_keenetic.common.geoip import GeoIPClient
 from drova_desktop_keenetic.common.helpers import (
@@ -65,6 +66,7 @@ class DrovaPollWorker:
         session = await check.run()
 
         if session is None:
+            await self._maybe_cleanup_restrictions(conn)
             wait_new = WaitNewDesktopSession(
                 conn, self.api_client, token_cache,
                 poll_interval=self.poll_interval_idle, product_catalog=self.product_catalog,
@@ -94,6 +96,18 @@ class DrovaPollWorker:
         self.logger.info("Session finished - exiting shadow defender and rebooting")
         after = AfterDisconnect(conn, self.host_config, streaming_enabled=self._streaming_enabled)
         await after.run()
+
+    async def _maybe_cleanup_restrictions(self, conn) -> None:
+        """If restrictions from a previous interrupted session are still active, remove them."""
+        cleanup = CleanupRestrictions(conn)
+        try:
+            if await cleanup.is_stuck():
+                self.logger.warning(
+                    "Stuck restrictions detected (no active session) — cleaning up"
+                )
+                await cleanup.run()
+        except Exception:
+            self.logger.exception("Failed to clean up stuck restrictions")
 
     async def polling(self) -> None:
         self.logger.info("Started polling")
