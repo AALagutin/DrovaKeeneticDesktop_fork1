@@ -32,7 +32,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-SETUP_SCRIPT = Path(__file__).parent / "setup_gamepc.ps1"
+SETUP_SCRIPT       = Path(__file__).parent / "setup_gamepc.ps1"
+UNINSTALL_SD_SCRIPT = Path(__file__).parent / "uninstall_sd.ps1"
 REMOTE_TEMP_FILENAME = "drova_setup_gamepc.ps1"
 # ADMIN$ maps to C:\Windows on remote host
 REMOTE_SHARE = "ADMIN$"
@@ -220,7 +221,7 @@ def _run_ps1(host: str, login: str, password: str, extra_args: str) -> tuple[int
 
 def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace) -> DeployResult:
     label = f"[{host_entry.name} / {host_entry.host}]"
-    extra_args = _build_extra_args(args, host_entry.sd_password)
+    extra_args = "" if args.uninstall_sd else _build_extra_args(args, host_entry.sd_password)
     try:
         print(f"{label} Uploading setup script via SMB...", flush=True)
         _upload_ps1(host_entry.host, host_entry.login, host_entry.password, ps1_bytes)
@@ -250,6 +251,10 @@ def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Deploy Drova GamePC setup to all hosts.")
+    p.add_argument(
+        "--uninstall-sd", action="store_true",
+        help="Deploy uninstall_sd.ps1 instead of setup_gamepc.ps1 to silently remove Shadow Defender.",
+    )
     p.add_argument(
         "--skip-ffmpeg", action="store_true",
         help="Pass -SkipFFmpeg to setup_gamepc.ps1 (faster, no streaming support)",
@@ -299,12 +304,13 @@ def _build_extra_args(args: argparse.Namespace, sd_password: str = "") -> str:
 def main() -> None:
     args = parse_args()
 
-    if not SETUP_SCRIPT.exists():
-        print(f"ERROR: {SETUP_SCRIPT} not found.", file=sys.stderr)
+    script = UNINSTALL_SD_SCRIPT if args.uninstall_sd else SETUP_SCRIPT
+    if not script.exists():
+        print(f"ERROR: {script} not found.", file=sys.stderr)
         sys.exit(1)
 
     # Ensure UTF-8 BOM so PowerShell 5.1 parses Unicode chars correctly.
-    raw = SETUP_SCRIPT.read_bytes()
+    raw = script.read_bytes()
     ps1_bytes = raw if raw.startswith(_UTF8_BOM) else _UTF8_BOM + raw
     filter_ips = [ip.strip() for ip in args.hosts.split(",")] if args.hosts else None
     hosts = load_hosts(filter_ips)
