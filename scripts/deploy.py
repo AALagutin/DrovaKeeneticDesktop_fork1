@@ -32,8 +32,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-SETUP_SCRIPT       = Path(__file__).parent / "setup_gamepc.ps1"
-UNINSTALL_SD_SCRIPT = Path(__file__).parent / "uninstall_sd.ps1"
+SETUP_SCRIPT              = Path(__file__).parent / "setup_gamepc.ps1"
+UNINSTALL_SD_SCRIPT       = Path(__file__).parent / "uninstall_sd.ps1"
+REMOVE_RESTRICTIONS_SCRIPT = Path(__file__).parent / "remove_restrictions.ps1"
 REMOTE_TEMP_FILENAME = "drova_setup_gamepc.ps1"
 # ADMIN$ maps to C:\Windows on remote host
 REMOTE_SHARE = "ADMIN$"
@@ -221,8 +222,14 @@ def _run_ps1(host: str, login: str, password: str, extra_args: str) -> tuple[int
 
 def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace) -> DeployResult:
     label = f"[{host_entry.name} / {host_entry.host}]"
-    extra_args = "" if args.uninstall_sd else _build_extra_args(args, host_entry.sd_password)
-    action_label = "Uninstalling Shadow Defender" if args.uninstall_sd else "setup script"
+    one_shot = args.uninstall_sd or args.remove_restrictions
+    extra_args = "" if one_shot else _build_extra_args(args, host_entry.sd_password)
+    if args.uninstall_sd:
+        action_label = "Uninstalling Shadow Defender"
+    elif args.remove_restrictions:
+        action_label = "Removing restrictions"
+    else:
+        action_label = "setup script"
     try:
         print(f"{label} Uploading {action_label} via SMB...", flush=True)
         _upload_ps1(host_entry.host, host_entry.login, host_entry.password, ps1_bytes)
@@ -232,7 +239,12 @@ def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, args: argparse.Namespace
             success=False, output="", error=f"Upload failed: {exc}",
         )
 
-    exec_hint = "(SD uninstall + reboot required)" if args.uninstall_sd else "(may take 5-10 min: OpenSSH + PsExec + FFmpeg + SD)"
+    if args.uninstall_sd:
+        exec_hint = "(SD uninstall + reboot required)"
+    elif args.remove_restrictions:
+        exec_hint = "(registry + firewall cleanup)"
+    else:
+        exec_hint = "(may take 5-10 min: OpenSSH + PsExec + FFmpeg + SD)"
     try:
         print(f"{label} Executing {exec_hint}...", flush=True)
         rc, out, err = _run_ps1(host_entry.host, host_entry.login, host_entry.password, extra_args)
@@ -256,6 +268,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--uninstall-sd", action="store_true",
         help="Deploy uninstall_sd.ps1 instead of setup_gamepc.ps1 to silently remove Shadow Defender.",
+    )
+    p.add_argument(
+        "--remove-restrictions", action="store_true",
+        help=(
+            "Deploy remove_restrictions.ps1 to undo all registry and firewall restrictions "
+            "left behind after a force-killed Drova client session."
+        ),
     )
     p.add_argument(
         "--skip-ffmpeg", action="store_true",
@@ -306,7 +325,12 @@ def _build_extra_args(args: argparse.Namespace, sd_password: str = "") -> str:
 def main() -> None:
     args = parse_args()
 
-    script = UNINSTALL_SD_SCRIPT if args.uninstall_sd else SETUP_SCRIPT
+    if args.uninstall_sd:
+        script = UNINSTALL_SD_SCRIPT
+    elif args.remove_restrictions:
+        script = REMOVE_RESTRICTIONS_SCRIPT
+    else:
+        script = SETUP_SCRIPT
     if not script.exists():
         print(f"ERROR: {script} not found.", file=sys.stderr)
         sys.exit(1)
