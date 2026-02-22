@@ -114,7 +114,7 @@ def _hosts_from_env() -> list[HostEntry]:
 # ---------------------------------------------------------------------------
 
 def _upload_ps1(host: str, login: str, password: str, content: bytes) -> None:
-    """Write content to \\host\ADMIN$\Temp\drova_setup_gamepc.ps1 via SMB."""
+    r"""Write content to \\host\ADMIN$\Temp\drova_setup_gamepc.ps1 via SMB."""
     try:
         from smbprotocol.connection import Connection
         from smbprotocol.open import (
@@ -208,7 +208,7 @@ def deploy_one(host_entry: HostEntry, ps1_bytes: bytes, extra_args: str) -> Depl
         )
 
     try:
-        print(f"{label} Executing (may take 5-10 min: OpenSSH + PsExec + FFmpeg)...", flush=True)
+        print(f"{label} Executing (may take 5-10 min: OpenSSH + PsExec + FFmpeg + SD)...", flush=True)
         rc, out, err = _run_ps1(host_entry.host, host_entry.login, host_entry.password, extra_args)
         return DeployResult(
             name=host_entry.name, host=host_entry.host,
@@ -232,6 +232,24 @@ def parse_args() -> argparse.Namespace:
         help="Pass -SkipFFmpeg to setup_gamepc.ps1 (faster, no streaming support)",
     )
     p.add_argument(
+        "--sd-installer",
+        metavar="PATH",
+        help=(
+            "Path to Shadow Defender installer on the REMOTE Windows machine "
+            "(e.g. D:\\Setup\\ShadowDefender_Setup.exe). "
+            "If omitted, script detects SD and reports status but does not install it."
+        ),
+    )
+    p.add_argument(
+        "--sd-password",
+        metavar="PWD",
+        default="",
+        help=(
+            "Shadow Defender password to verify with CmdTool.exe. "
+            "Leave empty for fresh installs (no password configured yet)."
+        ),
+    )
+    p.add_argument(
         "--hosts",
         help="Comma-separated list of IP addresses to target (overrides config host list)",
     )
@@ -240,6 +258,17 @@ def parse_args() -> argparse.Namespace:
         help=f"Max simultaneous deployments (default: {MAX_PARALLEL})",
     )
     return p.parse_args()
+
+
+def _build_extra_args(args: argparse.Namespace) -> str:
+    parts = []
+    if args.skip_ffmpeg:
+        parts.append("-SkipFFmpeg")
+    if args.sd_installer:
+        parts.append(f'-ShadowDefenderInstaller "{args.sd_installer}"')
+    if args.sd_password:
+        parts.append(f'-ShadowDefenderPassword "{args.sd_password}"')
+    return " ".join(parts)
 
 
 def main() -> None:
@@ -252,7 +281,7 @@ def main() -> None:
     ps1_bytes = SETUP_SCRIPT.read_bytes()
     filter_ips = [ip.strip() for ip in args.hosts.split(",")] if args.hosts else None
     hosts = load_hosts(filter_ips)
-    extra_args = "-SkipFFmpeg" if args.skip_ffmpeg else ""
+    extra_args = _build_extra_args(args)
 
     print(f"\nDeploying to {len(hosts)} host(s) with parallelism={args.parallel}")
     print("=" * 60)
