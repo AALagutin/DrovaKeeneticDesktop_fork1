@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from drova_desktop_keenetic.common.contants import (
@@ -31,11 +31,30 @@ class HostConfig:
 
 
 @dataclass(frozen=True)
+class StreamingConfig:
+    """Configuration for FFmpeg-based screen streaming."""
+
+    enabled: bool = False
+    monitor_ip: str = ""
+    monitor_port: int = 8554
+    fps: int = 2
+    resolution: str = "1280x720"
+    bitrate: str = "200k"
+    ffmpeg_path: str = r"C:\ffmpeg\bin\ffmpeg.exe"
+    encoder: str = "h264_nvenc"       # h264_nvenc | h264_amf | h264_qsv | libx264
+    encoder_preset: str = "p1"        # p1..p7 for NVENC; ultrafast for libx264
+    process_priority: str = "LOW"     # LOW | BELOWNORMAL | NORMAL
+    geoip_db_dir: str = "geoip_db"
+    geoip_update_interval_days: int = 7
+
+
+@dataclass(frozen=True)
 class AppConfig:
     hosts: list[HostConfig]
     poll_interval_idle: float = 5.0
     poll_interval_active: float = 3.0
     product_catalog_path: str = "drova_products.json"
+    streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
 
 def load_config() -> AppConfig:
@@ -107,5 +126,14 @@ def _load_from_json(path: str) -> AppConfig:
             )
         )
 
+    streaming_data = data.get("streaming", {})
+    streaming = StreamingConfig(**streaming_data) if streaming_data else StreamingConfig()
+
     logger.info(f"Loaded {len(hosts)} host(s) from {path}")
-    return AppConfig(hosts=hosts, poll_interval_idle=poll_idle, poll_interval_active=poll_active, product_catalog_path=catalog_path)
+    return AppConfig(
+        hosts=hosts,
+        poll_interval_idle=poll_idle,
+        poll_interval_active=poll_active,
+        product_catalog_path=catalog_path,
+        streaming=streaming,
+    )

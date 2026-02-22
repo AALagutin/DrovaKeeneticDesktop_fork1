@@ -3,7 +3,7 @@ from asyncio import sleep
 
 from asyncssh import SSHClientConnection
 
-from drova_desktop_keenetic.common.commands import ShadowDefenderCLI
+from drova_desktop_keenetic.common.commands import ShadowDefenderCLI, TaskKill
 from drova_desktop_keenetic.common.host_config import HostConfig
 
 logger = logging.getLogger(__name__)
@@ -12,13 +12,24 @@ logger = logging.getLogger(__name__)
 class AfterDisconnect:
     logger = logger.getChild("AfterDisconnect")
 
-    def __init__(self, client: SSHClientConnection, host_config: HostConfig):
+    def __init__(
+        self,
+        client: SSHClientConnection,
+        host_config: HostConfig,
+        streaming_enabled: bool = False,
+    ):
         self.client = client
         self.host_config = host_config
+        self.streaming_enabled = streaming_enabled
 
     async def run(self) -> bool:
-        self.logger.info("exit from shadow and reboot")
         await sleep(5)
+
+        if self.streaming_enabled:
+            self.logger.info("Stopping FFmpeg stream")
+            await self.client.run(str(TaskKill(image="ffmpeg.exe")))
+
+        self.logger.info("exit from shadow and reboot")
         result = await self.client.run(
             str(
                 ShadowDefenderCLI(

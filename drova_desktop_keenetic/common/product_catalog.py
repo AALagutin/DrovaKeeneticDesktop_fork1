@@ -85,6 +85,13 @@ class ProductCatalog:
         self._save()
         logger.info(f"Refreshed product catalog: {len(items)} products from API")
 
+    def get_title(self, product_id: UUID) -> str | None:
+        """Return cached product title, or None if unknown."""
+        entry = self._products.get(str(product_id))
+        if entry is None:
+            return None
+        return entry.get("title")
+
     def get_use_default_desktop(self, product_id: UUID) -> bool | None:
         """Look up use_default_desktop for a product. Returns None if unknown."""
         entry = self._products.get(str(product_id))

@@ -33,6 +33,7 @@ class PsExec(ICommandBuilder):
     interactive: int | None = field(kw_only=True, default=1)
     accepteula: bool = True
     detach: bool = True
+    low_priority: bool = False
     user: str = field(default_factory=lambda: os.environ.get(WINDOWS_LOGIN, ""))
     password: str = field(default_factory=lambda: os.environ.get(WINDOWS_PASSWORD, ""))
 
@@ -47,6 +48,9 @@ class PsExec(ICommandBuilder):
 
         if self.detach:
             command += ["-d"]
+
+        if self.low_priority:
+            command += ["-low"]
 
         if self.user:
             command += ["-u", quote(self.user)]

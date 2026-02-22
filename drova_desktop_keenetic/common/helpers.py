@@ -103,7 +103,7 @@ class BaseDrovaMerchantWindows:
 class CheckDesktop(BaseDrovaMerchantWindows):
     logger = logger.getChild("CheckDesktop")
 
-    async def run(self) -> bool:
+    async def run(self) -> SessionsEntity | None:
         self.logger.info("Checking for active desktop session")
         servers = await self.get_servers()
         for server_id, auth_token in servers:
@@ -116,8 +116,8 @@ class CheckDesktop(BaseDrovaMerchantWindows):
             if session.status in (StatusEnum.HANDSHAKE, StatusEnum.ACTIVE, StatusEnum.NEW):
                 if await self.check_desktop_session(session, auth_token):
                     self.set_active_server(server_id, auth_token)
-                    return True
-        return False
+                    return session
+        return None
 
 
 class WaitFinishOrAbort(BaseDrovaMerchantWindows):
@@ -158,7 +158,7 @@ class WaitNewDesktopSession(BaseDrovaMerchantWindows):
         super().__init__(client, api_client, token_cache, product_catalog)
         self.poll_interval = poll_interval
 
-    async def run(self) -> bool:
+    async def run(self) -> SessionsEntity:
         while True:
             servers = await self.get_servers()
             for server_id, auth_token in servers:
@@ -173,5 +173,5 @@ class WaitNewDesktopSession(BaseDrovaMerchantWindows):
                 ):
                     if await self.check_desktop_session(session, auth_token):
                         self.set_active_server(server_id, auth_token)
-                        return True
+                        return session
             await sleep(self.poll_interval)
