@@ -34,11 +34,20 @@ class BeforeConnect:
         self.app_config = app_config
 
     async def run(self) -> bool:
+        cfg = self.app_config.streaming if self.app_config else None
+
+        # Kill idle ffmpeg BEFORE Shadow Defender enters protection mode.
+        # gdigrab (used by the idle stream) must not be running when SD
+        # initialises its disk filter — otherwise SD may fail to enter.
+        if cfg and cfg.enabled and cfg.always_on:
+            self.logger.info("Stopping idle stream before Shadow Defender enter")
+            await self.client.run(str(TaskKill(image="ffmpeg.exe")))
+
         self.logger.info("open sftp")
         async with self.client.start_sftp_client() as sftp:
 
             self.logger.info("start shadow")
-            await self.client.run(
+            sd_result = await self.client.run(
                 str(
                     ShadowDefenderCLI(
                         password=self.host_config.shadow_defender_password,
@@ -47,6 +56,13 @@ class BeforeConnect:
                     )
                 )
             )
+            if sd_result.exit_status:
+                self.logger.error(
+                    "Shadow Defender enter FAILED (exit_status=%d); "
+                    "session will proceed WITHOUT disk protection. stderr: %r",
+                    sd_result.exit_status,
+                    sd_result.stderr,
+                )
             await sleep(2)
 
             failed_patches: list[str] = []
@@ -78,7 +94,8 @@ class BeforeConnect:
             return
 
         if cfg.always_on:
-            self.logger.info("Replacing idle stream with session stream")
+            # Idle stream was already killed in run() before SD enter;
+            # call TaskKill again as a safety net (harmless if already dead).
             await self.client.run(str(TaskKill(image="ffmpeg.exe")))
 
         self.logger.info("Resolving GeoIP for client %s", self.session.creator_ip)
@@ -115,4 +132,11 @@ class BeforeConnect:
             cfg.monitor_port,
             self.host_config.host.replace(".", "-"),
         )
-        await self.client.run(psexec_cmd)
+        ps_result = await self.client.run(psexec_cmd)
+        if ps_result.exit_status:
+            self.logger.error(
+                "PsExec failed to launch session FFmpeg (exit_status=%d). "
+                "stderr: %r",
+                ps_result.exit_status,
+                ps_result.stderr,
+            )

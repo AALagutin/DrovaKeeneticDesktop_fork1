@@ -87,7 +87,14 @@ class DrovaPollWorker:
             cfg.monitor_port,
             self.host_config.host.replace(".", "-"),
         )
-        await conn.run(psexec_cmd)
+        ps_result = await conn.run(psexec_cmd)
+        if ps_result.exit_status:
+            self.logger.error(
+                "PsExec failed to launch idle FFmpeg (exit_status=%d). "
+                "stderr: %r",
+                ps_result.exit_status,
+                ps_result.stderr,
+            )
 
     async def _handle_session(self, conn, token_cache: ExpiringDict) -> None:
         """Handle one complete session cycle: check -> wait -> prepare -> wait_finish -> cleanup."""
