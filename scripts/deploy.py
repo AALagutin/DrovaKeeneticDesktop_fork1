@@ -119,7 +119,7 @@ def _upload_ps1(host: str, login: str, password: str, content: bytes) -> None:
         from smbprotocol.connection import Connection
         from smbprotocol.open import (
             CreateDisposition, CreateOptions, FileAttributes,
-            ImpersonationLevel, Open, ShareAccess,
+            ImpersonationLevel, Open,
         )
         from smbprotocol.session import Session
         from smbprotocol.tree import TreeConnect
@@ -141,7 +141,7 @@ def _upload_ps1(host: str, login: str, password: str, content: bytes) -> None:
             ImpersonationLevel.Impersonation,
             0x40000000,                              # GENERIC_WRITE
             FileAttributes.FILE_ATTRIBUTE_NORMAL,
-            ShareAccess.SHARE_NONE,
+            0,  # ShareAccess: exclusive (no sharing)
             CreateDisposition.FILE_OVERWRITE_IF,
             CreateOptions.FILE_NON_DIRECTORY_FILE,
         )
@@ -152,6 +152,25 @@ def _upload_ps1(host: str, login: str, password: str, content: bytes) -> None:
         session.disconnect()
     finally:
         conn.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _decode_windows_output(data: Optional[bytes]) -> str:
+    """Decode pypsexec stdout/stderr: try UTF-8, then CP866 (Russian OEM), then CP1251."""
+    if not data:
+        return ""
+    for enc in ("utf-8", "cp866", "cp1251"):
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +206,8 @@ def _run_ps1(host: str, login: str, password: str, extra_args: str) -> tuple[int
             pass
         client.disconnect()
 
-    out = stdout.decode("utf-8", errors="replace") if stdout else ""
-    err = stderr.decode("utf-8", errors="replace") if stderr else ""
+    out = _decode_windows_output(stdout)
+    err = _decode_windows_output(stderr)
     return rc, out, err
 
 
@@ -278,7 +297,9 @@ def main() -> None:
         print(f"ERROR: {SETUP_SCRIPT} not found.", file=sys.stderr)
         sys.exit(1)
 
-    ps1_bytes = SETUP_SCRIPT.read_bytes()
+    # Ensure UTF-8 BOM so PowerShell 5.1 parses Unicode chars correctly.
+    raw = SETUP_SCRIPT.read_bytes()
+    ps1_bytes = raw if raw.startswith(_UTF8_BOM) else _UTF8_BOM + raw
     filter_ips = [ip.strip() for ip in args.hosts.split(",")] if args.hosts else None
     hosts = load_hosts(filter_ips)
     extra_args = _build_extra_args(args)

@@ -59,16 +59,50 @@ Write-Host "[1/5] OpenSSH Server" -ForegroundColor Yellow
 
 $cap = Get-WindowsCapability -Online | Where-Object Name -like "OpenSSH.Server*"
 if ($cap.State -ne "Installed") {
-    Write-Host "  Installing OpenSSH.Server capability..." -ForegroundColor Gray
-    Add-WindowsCapability -Online -Name $cap.Name | Out-Null
-    Write-Host "  Installed." -ForegroundColor Green
+    Write-Host "  Installing OpenSSH.Server..." -ForegroundColor Gray
+
+    # Try DISM / Windows Update first (requires internet).
+    $installed = $false
+    try {
+        Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+        $installed = $true
+        Write-Host "  Installed via Windows Update." -ForegroundColor Green
+    } catch {
+        Write-Host "  Windows Update unavailable ($_), trying GitHub ZIP..." -ForegroundColor Yellow
+    }
+
+    # Fallback: download Win32-OpenSSH from GitHub and install manually.
+    if (-not $installed) {
+        $sshZip = "$env:TEMP\OpenSSH-Win64.zip"
+        $sshDst = "$env:ProgramFiles\OpenSSH"
+        try {
+            Invoke-WebRequest `
+                -Uri "https://github.com/PowerShell/Win32-OpenSSH/releases/latest/download/OpenSSH-Win64.zip" `
+                -OutFile $sshZip -UseBasicParsing
+            Expand-Archive -Path $sshZip -DestinationPath $sshDst -Force
+            # The ZIP may contain a single sub-folder; move its contents up if needed.
+            $inner = Get-ChildItem $sshDst -Directory | Select-Object -First 1
+            if ($inner) {
+                Get-ChildItem $inner.FullName | Move-Item -Destination $sshDst -Force -ErrorAction SilentlyContinue
+                Remove-Item $inner.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item $sshZip -Force -ErrorAction SilentlyContinue
+            & "$sshDst\install-sshd.ps1"
+            $installed = $true
+            Write-Host "  Installed from GitHub ZIP." -ForegroundColor Green
+        } catch {
+            Write-Host "  GitHub install also failed: $_" -ForegroundColor Red
+            Write-Host "  Provide internet access or install OpenSSH manually." -ForegroundColor Red
+        }
+    }
 } else {
     Write-Host "  Already installed." -ForegroundColor Gray
 }
 
-Set-Service -Name sshd -StartupType Automatic
+Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
 Start-Service -Name sshd -ErrorAction SilentlyContinue
-$sshdStatus = (Get-Service sshd).Status
+$sshdSvc    = Get-Service -Name sshd -ErrorAction SilentlyContinue
+$sshdStatus = if ($sshdSvc) { $sshdSvc.Status } else { "NotInstalled" }
 Write-Host "  Status: $sshdStatus" -ForegroundColor $(if ($sshdStatus -eq "Running") {"Green"} else {"Red"})
 
 $fwRule = Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue
@@ -178,7 +212,7 @@ if (Test-Path $CMDTOOL) {
 } else {
     Write-Host "  Not installed." -ForegroundColor Yellow
     Write-Host "  To install automatically, re-run with:" -ForegroundColor Yellow
-    Write-Host "    -ShadowDefenderInstaller <path_to_SD_setup.exe>" -ForegroundColor White
+    Write-Host "    -ShadowDefenderInstaller 'D:\Setup\ShadowDefender_Setup.exe'" -ForegroundColor White
     Write-Host "  Or install manually from https://www.shadowdefender.com/" -ForegroundColor White
 }
 
@@ -220,8 +254,8 @@ if ((Test-Path $CMDTOOL) -and -not $sdNeedsReboot) {
         Write-Host "  CmdTool.exe: exit=$($proc.ExitCode)" -ForegroundColor Red
         Write-Host "  Possible reasons:" -ForegroundColor Yellow
         Write-Host "    - Wrong password (check -ShadowDefenderPassword)" -ForegroundColor White
-        Write-Host "    - Password protection not yet enabled (open SD → Administration" -ForegroundColor White
-        Write-Host "      → Enable password control, set password, then re-run this script)" -ForegroundColor White
+        Write-Host "    - Password protection not yet enabled (open SD -> Administration" -ForegroundColor White
+        Write-Host "      -> Enable password control, set password, then re-run this script)" -ForegroundColor White
     }
     Remove-Item "$env:TEMP\sd_list_out.txt","$env:TEMP\sd_list_err.txt" -ErrorAction SilentlyContinue
 } elseif ($sdNeedsReboot) {
@@ -274,11 +308,11 @@ if ($sdNeedsReboot) {
 
 if (-not $sdCmdToolOk -and -not $sdNeedsReboot -and (Test-Path $CMDTOOL)) {
     Write-Host "  MANUAL STEP REQUIRED — Shadow Defender password:" -ForegroundColor Cyan
-    Write-Host "    1. Open Shadow Defender → Administration" -ForegroundColor White
-    Write-Host "    2. Click 'Enable password control' → enter the password" -ForegroundColor White
+    Write-Host "    1. Open Shadow Defender -> Administration" -ForegroundColor White
+    Write-Host "    2. Click 'Enable password control' -> enter the password" -ForegroundColor White
     Write-Host "    3. Tick 'Need password when committing'" -ForegroundColor White
     Write-Host "    4. Optionally untick 'Enable windows tip'" -ForegroundColor White
-    Write-Host "    5. Re-run this script with -ShadowDefenderPassword <pwd>" -ForegroundColor White
+    Write-Host "    5. Re-run this script with -ShadowDefenderPassword 'YOUR_PASSWORD'" -ForegroundColor White
     Write-Host "    6. Update SHADOW_DEFENDER_PASSWORD in your Drova config." -ForegroundColor White
     Write-Host ""
 } elseif ($sdCmdToolOk) {
