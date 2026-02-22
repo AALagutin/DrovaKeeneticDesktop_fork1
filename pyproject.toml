@@ -32,6 +32,12 @@ isort = "^6.0.1"
 mypy = "^1.17.1"
 types-aiofiles = "^24.1.0.20250822"
 
+[tool.poetry.group.setup.dependencies]
+# Optional group for the automated GamePC setup tool (scripts/deploy.py).
+# Install with: poetry install --with setup
+pypsexec = "^0.3.0"
+smbprotocol = "^1.15.0"
+
 
 [build-system]
 requires = ["poetry-core"]

@@ -4,6 +4,8 @@
 
 - [1. Требования](#1-требования)
 - [2. Подготовка Windows-машин](#2-подготовка-windows-машин)
+  - [2.0 Автоматическая установка (рекомендуется)](#20-автоматическая-установка-рекомендуется)
+  - [2.1 Ручная установка OpenSSH Server](#21-установка-openssh-server)
 - [3. Установка на Linux-сервер](#3-установка-на-linux-сервер)
 - [4. Конфигурация](#4-конфигурация)
   - [Режим A: Один ПК](#режим-a-один-пк-обратная-совместимость)
@@ -46,7 +48,79 @@
 
 ## 2. Подготовка Windows-машин
 
-Выполните на **каждой** Windows-машине.
+### 2.0 Автоматическая установка (рекомендуется)
+
+Если на каждой машине уже выполнено:
+
+```cmd
+reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v LocalAccountTokenFilterPolicy /t REG_DWORD /d 1 /f
+```
+
+и сеть настроена как **Private** — можно развернуть все машины **с Linux-сервера одной командой**, без ручной работы за каждым ПК.
+
+**Как это работает:** `scripts/deploy.py` подключается к каждому ПК по SMB (порт 445), загружает скрипт `scripts/setup_gamepc.ps1` во временную папку и запускает его через PsExec-протокол (`pypsexec`). Никакого дополнительного ПО на Windows не нужно — SMB и DCOM включены по умолчанию.
+
+`setup_gamepc.ps1` выполняет на каждой машине:
+- Устанавливает **OpenSSH Server** и переводит его в автозагрузку
+- Прописывает PowerShell как оболочку по умолчанию для SSH
+- Добавляет правило брандмауэра для порта 22
+- Скачивает **PsExec** (Sysinternals) в `System32` и автоматически принимает EULA
+- Скачивает **FFmpeg** в `C:\ffmpeg\bin\` (пропустить флагом `--skip-ffmpeg`)
+
+#### Установка зависимостей для deploy.py
+
+```bash
+cd /opt/drova-desktop
+poetry install --with setup
+```
+
+#### Запуск
+
+```bash
+# С JSON-конфигом (Режим C):
+DROVA_CONFIG=/opt/drova-desktop/config.json \
+    poetry run python scripts/deploy.py
+
+# Со переменными окружения (Режим B):
+WINDOWS_HOSTS=192.168.0.10,192.168.0.11,192.168.0.12 \
+WINDOWS_LOGIN=Administrator WINDOWS_PASSWORD=ВашПароль \
+    poetry run python scripts/deploy.py
+
+# Без FFmpeg (быстрее, не нужен если streaming отключён):
+DROVA_CONFIG=... poetry run python scripts/deploy.py --skip-ffmpeg
+
+# Только определённые хосты из конфига:
+DROVA_CONFIG=... poetry run python scripts/deploy.py --hosts 192.168.0.10,192.168.0.11
+```
+
+Пример вывода при развёртывании на 5 машин (~8 минут параллельно):
+
+```
+Deploying to 5 host(s) with parallelism=10
+============================================================
+[Зал1-01 / 192.168.0.10] Uploading setup script via SMB...
+[Зал1-02 / 192.168.0.11] Uploading setup script via SMB...
+[Зал1-03 / 192.168.0.12] Uploading setup script via SMB...
+[VIP-01 / 192.168.1.10]  Uploading setup script via SMB...
+[VIP-02 / 192.168.1.11]  Uploading setup script via SMB...
+[Зал1-01 / 192.168.0.10] Executing (may take 5-10 min)...
+...
+============================================================
+SUMMARY
+============================================================
+  [OK  ]  Зал1-01      192.168.0.10
+  [OK  ]  Зал1-02      192.168.0.11
+  [OK  ]  Зал1-03      192.168.0.12
+  [OK  ]  VIP-01       192.168.1.10
+  [FAIL]  VIP-02       192.168.1.11
+         ERROR: Upload failed: Connection refused
+
+  4/5 hosts set up successfully.
+```
+
+> **Примечание:** Shadow Defender нельзя установить автоматически (требует лицензионного GUI-установщика). Установите его вручную после автоматической настройки остальных компонентов.
+
+---
 
 ### 2.1 Установка OpenSSH Server
 
@@ -502,6 +576,17 @@ systemctl status drova_manager
 ---
 
 ## 9. Устранение неполадок
+
+### Ошибки deploy.py (автоматическая установка)
+
+| Ошибка | Причина | Решение |
+|--------|---------|---------|
+| `pypsexec not installed` | Группа `setup` не установлена | `poetry install --with setup` |
+| `Upload failed: Connection refused` | SMB (порт 445) недоступен | Проверьте, что брандмауэр Windows не блокирует порт 445; убедитесь что `LocalAccountTokenFilterPolicy=1` |
+| `Upload failed: STATUS_LOGON_FAILURE` | Неверные учётные данные | Проверьте `WINDOWS_LOGIN` / `WINDOWS_PASSWORD` |
+| `Execution failed: timed out` | Скрипт выполняется дольше 10 минут | Перезапустите с `--skip-ffmpeg`; или увеличьте `EXEC_TIMEOUT_SECONDS` в `deploy.py` |
+| `[FAIL] ... Add-WindowsCapability error` | Windows Update недоступен | Убедитесь что ПК имеет доступ к интернету; или установите OpenSSH вручную (п. 2.1) |
+| `EULA error` для PsExec | EULA не принята от имени SYSTEM | Уже обрабатывается скриптом (пишет оба ключа HCU и HKLM); если повторяется — запустите PsExec вручную один раз |
 
 ### Ошибки запуска
 
