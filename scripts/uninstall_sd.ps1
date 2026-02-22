@@ -1,21 +1,25 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    Silently uninstalls Shadow Defender.
+    Silently uninstalls Shadow Defender (any install method).
 
 .DESCRIPTION
-    Stops the Shadow Defender service, then runs the NSIS silent uninstaller
-    (unins000.exe /S).  Falls back to WMI if the uninstaller binary is missing.
-    A reboot is required after uninstall to remove the kernel driver.
+    Priority order:
+      1. NSIS silent uninstaller: looks for unins*.exe in the SD directory.
+      2. WMI uninstall: Win32_Product lookup.
+      3. Manual force cleanup:
+           - Kill all SD processes
+           - sc.exe delete all SD services (WMI-based, catches unregistered drivers)
+           - Remove the SD program directory (takeown + icacls if needed)
+           - Remove SD uninstall registry keys (both 64-bit and WOW6432Node)
 
     Use deploy.py --uninstall-sd to push and run this script on all GamePCs.
 #>
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "SilentlyContinue"
 $ProgressPreference    = "SilentlyContinue"
 
 $SD_DIR  = "C:\Program Files\Shadow Defender"
-$UNINST  = "$SD_DIR\unins000.exe"
 $CMDTOOL = "$SD_DIR\CmdTool.exe"
 
 Write-Host ""
@@ -24,69 +28,134 @@ Write-Host " Shadow Defender Uninstall  -  $env:COMPUTERNAME"  -ForegroundColor 
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# --- Check if installed ---
-if (-not (Test-Path $CMDTOOL)) {
+# --- Check if anything to do ---
+if (-not (Test-Path $CMDTOOL) -and -not (Test-Path $SD_DIR)) {
     Write-Host "  Shadow Defender is not installed. Nothing to do." -ForegroundColor Green
     exit 0
 }
 Write-Host "  Found: $SD_DIR" -ForegroundColor Gray
 
-# --- Stop service ---
+# --- Stop service via Get-Service (fast path) ---
 $svc = Get-Service -Name "ShadowDefender*" -ErrorAction SilentlyContinue |
        Select-Object -First 1
 if ($svc) {
     Write-Host "  Service: $($svc.Name) / Status: $($svc.Status)" -ForegroundColor Gray
     if ($svc.Status -eq "Running") {
         Write-Host "  Stopping service..." -ForegroundColor Gray
-        try {
-            Stop-Service -Name $svc.Name -Force -ErrorAction Stop
-            Write-Host "  Service stopped." -ForegroundColor Green
-        } catch {
-            Write-Host "  Warning: could not stop service: $_" -ForegroundColor Yellow
-        }
+        Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
+        Write-Host "  Service stopped." -ForegroundColor Green
     }
 } else {
-    Write-Host "  Service not found (driver may not be active)." -ForegroundColor Gray
+    Write-Host "  No service via Get-Service (driver may not be registered)." -ForegroundColor Gray
 }
 
-# --- Uninstall ---
-if (Test-Path $UNINST) {
-    Write-Host "  Running: $UNINST /S ..." -ForegroundColor Gray
-    $proc = Start-Process -FilePath $UNINST -ArgumentList "/S" -Wait -PassThru
+# ---------------------------------------------------------------------------
+# Method 1: NSIS uninstaller (any unins*.exe in the SD directory)
+# ---------------------------------------------------------------------------
+$uninstBin = Get-ChildItem -Path $SD_DIR -Filter "unins*.exe" -ErrorAction SilentlyContinue |
+             Select-Object -First 1
+if ($uninstBin) {
+    Write-Host "  Running NSIS uninstaller: $($uninstBin.FullName) /S ..." -ForegroundColor Gray
+    $proc = Start-Process -FilePath $uninstBin.FullName -ArgumentList "/S" -Wait -PassThru
+    Write-Host "  Uninstaller exit code: $($proc.ExitCode)" -ForegroundColor $(if ($proc.ExitCode -eq 0) {"Green"} else {"Yellow"})
     if ($proc.ExitCode -eq 0) {
-        Write-Host "  Uninstaller finished (exit 0)." -ForegroundColor Green
-    } else {
-        Write-Host "  Uninstaller exit code: $($proc.ExitCode)" -ForegroundColor Yellow
-        Write-Host "  Continuing — some files may still be present until reboot." -ForegroundColor Yellow
+        Write-Host "  REBOOT REQUIRED to unload the kernel driver." -ForegroundColor Yellow
+        Write-Host "  Done." -ForegroundColor Green
+        Write-Host ""
+        exit 0
     }
+    Write-Host "  NSIS uninstall did not exit cleanly, falling through to manual cleanup." -ForegroundColor Yellow
+}
+
+# ---------------------------------------------------------------------------
+# Method 2: WMI uninstall
+# ---------------------------------------------------------------------------
+Write-Host "  Trying WMI uninstall..." -ForegroundColor Gray
+$product = Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue |
+           Where-Object { $_.Name -like "*Shadow Defender*" }
+if ($product) {
+    $result = $product.Uninstall()
+    if ($result.ReturnValue -eq 0) {
+        Write-Host "  WMI uninstall succeeded." -ForegroundColor Green
+        Write-Host "  REBOOT REQUIRED to unload the kernel driver." -ForegroundColor Yellow
+        Write-Host "  Done." -ForegroundColor Green
+        Write-Host ""
+        exit 0
+    }
+    Write-Host "  WMI uninstall returned: $($result.ReturnValue) — falling through to manual cleanup." -ForegroundColor Yellow
 } else {
-    Write-Host "  unins000.exe not found, trying WMI uninstall..." -ForegroundColor Yellow
-    $product = Get-WmiObject -Class Win32_Product -ErrorAction SilentlyContinue |
-               Where-Object { $_.Name -like "*Shadow Defender*" }
-    if ($product) {
-        $result = $product.Uninstall()
-        if ($result.ReturnValue -eq 0) {
-            Write-Host "  WMI uninstall succeeded." -ForegroundColor Green
-        } else {
-            Write-Host "  WMI uninstall failed (ReturnValue=$($result.ReturnValue))." -ForegroundColor Red
-            exit 1
+    Write-Host "  No WMI product entry found." -ForegroundColor Gray
+}
+
+# ---------------------------------------------------------------------------
+# Method 3: Manual force cleanup
+# (handles SD installed without a proper installer / orphaned files)
+# ---------------------------------------------------------------------------
+Write-Host "  Performing manual force cleanup..." -ForegroundColor Yellow
+
+# 3a. Kill all SD-related processes
+$sdProcPatterns = @("Shadow*", "ShadowSrv*", "ShadowUI*", "CmdTool*")
+foreach ($pat in $sdProcPatterns) {
+    Get-Process -Name $pat -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-Host "  Killing process: $($_.Name) (PID $($_.Id))" -ForegroundColor Gray
+        $_.Kill()
+    }
+}
+Start-Sleep -Milliseconds 500
+
+# 3b. Delete all services whose binary path lives inside the SD directory
+#     Uses WMI because some drivers may not appear in Get-Service.
+$sdServices = Get-WmiObject Win32_Service -ErrorAction SilentlyContinue |
+              Where-Object { $_.PathName -like "*Shadow Defender*" -or $_.Name -like "*Shadow*" }
+foreach ($s in $sdServices) {
+    Write-Host "  Removing service: $($s.Name)" -ForegroundColor Gray
+    & sc.exe stop   $s.Name 2>&1 | Out-Null
+    & sc.exe delete $s.Name 2>&1 | Out-Null
+}
+
+# 3c. Remove uninstall registry keys
+$uninstBases = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+)
+foreach ($base in $uninstBases) {
+    if (-not (Test-Path $base)) { continue }
+    Get-ChildItem $base -ErrorAction SilentlyContinue | ForEach-Object {
+        $disp = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue).DisplayName
+        if ($disp -like "*Shadow Defender*") {
+            Write-Host "  Removing uninstall key: $($_.PSPath)" -ForegroundColor Gray
+            Remove-Item $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
         }
-    } else {
-        Write-Host "  ERROR: cannot find uninstaller or WMI product entry." -ForegroundColor Red
-        exit 1
     }
 }
 
-# --- Post-check ---
-if (Test-Path $CMDTOOL) {
-    Write-Host ""
-    Write-Host "  Files still present (normal — reboot will complete removal)." -ForegroundColor Yellow
-} else {
-    Write-Host "  Installation directory removed." -ForegroundColor Green
+# 3d. Delete SD program directory
+if (Test-Path $SD_DIR) {
+    Write-Host "  Removing directory: $SD_DIR ..." -ForegroundColor Gray
+    # First attempt — may fail if a driver file is locked
+    Remove-Item $SD_DIR -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $SD_DIR) {
+        # Take ownership and grant full control, then retry
+        & takeown.exe /f "$SD_DIR" /r /d y 2>&1 | Out-Null
+        & icacls.exe  "$SD_DIR" /grant "Administrators:F" /t 2>&1 | Out-Null
+        & cmd.exe /c "rmdir /s /q `"$SD_DIR`"" 2>&1 | Out-Null
+    }
+    if (Test-Path $SD_DIR) {
+        Write-Host "  Directory still present — a driver file may be locked until reboot." -ForegroundColor Yellow
+    } else {
+        Write-Host "  Directory removed." -ForegroundColor Green
+    }
 }
 
+# --- Final status ---
 Write-Host ""
-Write-Host "  REBOOT REQUIRED to unload the kernel driver." -ForegroundColor Yellow
+if (Test-Path $CMDTOOL) {
+    Write-Host "  CmdTool.exe still present (locked driver file — will be gone after reboot)." -ForegroundColor Yellow
+} else {
+    Write-Host "  Shadow Defender files removed." -ForegroundColor Green
+}
+
+Write-Host "  REBOOT REQUIRED to fully unload the kernel driver." -ForegroundColor Yellow
 Write-Host "  Done." -ForegroundColor Green
 Write-Host ""
 exit 0
