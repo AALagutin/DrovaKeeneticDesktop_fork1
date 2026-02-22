@@ -6,6 +6,10 @@
 - [2. Подготовка Windows-машин](#2-подготовка-windows-машин)
 - [3. Установка на Linux-сервер](#3-установка-на-linux-сервер)
 - [4. Конфигурация](#4-конфигурация)
+  - [Режим A: Один ПК](#режим-a-один-пк-обратная-совместимость)
+  - [Режим B: Несколько ПК](#режим-b-несколько-пк-с-общими-credentials)
+  - [Режим C: JSON-конфигурация](#режим-c-json-конфигурация-разные-настройки-per-host)
+  - [Раздел streaming — видеозапись сеансов](#раздел-streaming--видеозапись-сеансов)
 - [5. Проверка](#5-проверка)
 - [6. Запуск](#6-запуск)
 - [7. Автозапуск](#7-автозапуск)
@@ -26,6 +30,8 @@
 | Сеть | Доступ к Windows-машинам (SSH:22) | Стабильное подключение |
 | Интернет | Доступ к `services.drova.io` (HTTPS:443) | — |
 
+> **Видеозапись сеансов (опционально):** для работы раздела `streaming` дополнительно нужен RTSP-сервер (например, [MediaMTX](https://github.com/bluenviron/mediamtx)) на отдельной машине или на том же Linux-сервере. Linux-сервер должен иметь доступ к GitHub Releases для загрузки баз GeoLite2 (HTTPS:443).
+
 ### Каждая Windows-машина (игровой ПК)
 
 - OpenSSH Server — включён и добавлен в автозагрузку
@@ -33,6 +39,8 @@
 - PsExec (PsTools) — в `C:\Windows\System32` или в PATH
 - Drova Esme (агент) — установлен и зарегистрирован
 - Учётная запись администратора — залогинена в интерактивной сессии
+
+> **Видеозапись сеансов (опционально):** FFmpeg установлен по пути `C:\ffmpeg\bin\ffmpeg.exe`. GPU с поддержкой аппаратного кодирования (NVIDIA NVENC, AMD AMF или Intel QSV) или любой CPU для программного кодирования (`libx264`).
 
 ---
 
@@ -225,6 +233,91 @@ DROVA_CONFIG=/opt/drova-desktop/config.json
 | `shadow_defender_password` | Нет | Переопределяет `defaults.shadow_defender_password` |
 | `shadow_defender_drives` | Нет | Переопределяет `defaults.shadow_defender_drives` |
 
+### Раздел streaming — видеозапись сеансов
+
+Раздел `streaming` добавляется в JSON-конфигурацию (Режим C). Доступен только через JSON — через переменные окружения не поддерживается.
+
+**Принцип работы:** при начале каждого игрового сеанса Linux-сервер запускает FFmpeg на Windows-машине через PsExec по SSH. FFmpeg захватывает экран (`gdigrab`) и стримит по RTSP на монитор-сервер. Поверх видео накладывается оверлей: IP клиента, город/провайдер/ASN (GeoIP), название игры, время сеанса и живые часы. После окончания сеанса FFmpeg останавливается через `taskkill`.
+
+GeoIP определяется в два шага:
+1. Локальная база MaxMind GeoLite2 (скачивается с GitHub автоматически, обновляется раз в `geoip_update_interval_days` дней).
+2. Если база недоступна — запрос к `ip-api.com`.
+
+**Пример конфигурации:**
+
+```json
+{
+  "poll_interval_idle": 5,
+  "poll_interval_active": 3,
+  "defaults": {
+    "login": "Administrator",
+    "password": "ВашПароль",
+    "shadow_defender_password": "ПарольShadowDefender",
+    "shadow_defender_drives": "CDE"
+  },
+  "hosts": [
+    {"name": "Зал1-01", "host": "192.168.0.10"},
+    {"name": "Зал1-02", "host": "192.168.0.11"}
+  ],
+  "streaming": {
+    "enabled": true,
+    "monitor_ip": "192.168.1.200",
+    "monitor_port": 8554,
+    "fps": 2,
+    "resolution": "1280x720",
+    "bitrate": "200k",
+    "ffmpeg_path": "C:\\ffmpeg\\bin\\ffmpeg.exe",
+    "encoder": "h264_nvenc",
+    "encoder_preset": "p1",
+    "process_priority": "LOW",
+    "geoip_db_dir": "geoip_db",
+    "geoip_update_interval_days": 7
+  }
+}
+```
+
+**Описание параметров:**
+
+| Параметр | По умолчанию | Описание |
+|----------|-------------|----------|
+| `enabled` | `false` | Включить видеозапись сеансов |
+| `monitor_ip` | `""` | IP-адрес RTSP-сервера (MediaMTX или аналог) |
+| `monitor_port` | `8554` | Порт RTSP-сервера |
+| `fps` | `2` | Частота кадров захвата (кадр/с). `2` — баланс нагрузки и читаемости |
+| `resolution` | `"1280x720"` | Разрешение выходного потока |
+| `bitrate` | `"200k"` | Целевой битрейт (CBR). Примеры: `100k`, `500k`, `1M` |
+| `ffmpeg_path` | `C:\ffmpeg\bin\ffmpeg.exe` | Полный путь к `ffmpeg.exe` на Windows-машине |
+| `encoder` | `"h264_nvenc"` | Видеокодек: `h264_nvenc` (NVIDIA), `h264_amf` (AMD), `h264_qsv` (Intel), `libx264` (CPU) |
+| `encoder_preset` | `"p1"` | Пресет кодека. `p1`–`p7` для NVENC (p1 — быстрейший); `ultrafast` для libx264 |
+| `process_priority` | `"LOW"` | Приоритет процесса FFmpeg: `LOW`, `BELOWNORMAL`, `NORMAL` |
+| `geoip_db_dir` | `"geoip_db"` | Директория для хранения баз GeoLite2 (относительно рабочего каталога) |
+| `geoip_update_interval_days` | `7` | Интервал автообновления баз GeoLite2 (дни) |
+
+**Поток RTSP** формируется по шаблону:
+```
+rtsp://<monitor_ip>:<monitor_port>/live/<pc-ip-через-дефис>
+```
+
+Например, для ПК `192.168.0.10`:
+```
+rtsp://192.168.1.200:8554/live/192-168-0-10
+```
+
+**Минимальная настройка MediaMTX на Linux:**
+
+```bash
+# Установка
+wget https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_linux_amd64.tar.gz
+tar -xzf mediamtx_linux_amd64.tar.gz
+./mediamtx &
+```
+
+MediaMTX слушает RTSP на порту `8554` по умолчанию. Просмотр потоков через VLC или `ffplay`:
+
+```bash
+ffplay rtsp://192.168.1.200:8554/live/192-168-0-10
+```
+
 ---
 
 ## 5. Проверка
@@ -388,6 +481,18 @@ DEBUG Worker[Зал1-01] Cannot connect - PC unavailable or rebooting
 INFO  Worker[Зал1-01] Started polling
 ```
 
+**Логи видеозаписи (если `streaming.enabled = true`):**
+
+```
+INFO  BeforeConnect Resolving GeoIP for client 95.173.1.1
+DEBUG geoip GeoIP local miss for 95.173.1.1, falling back to ip-api.com
+INFO  BeforeConnect Starting FFmpeg stream: rtsp://192.168.1.200:8554/live/192-168-0-10
+INFO  AfterDisconnect Stopping FFmpeg stream
+WARN  geoip GeoIP: API lookup failed for 95.173.1.1   ← ip-api.com недоступен, оверлей без гео
+WARN  geoip GeoIP: failed to download databases — will use API fallback
+INFO  geoip GeoIP databases updated successfully
+```
+
 ### Проверка статуса всех воркеров
 
 ```bash
@@ -422,6 +527,32 @@ systemctl status drova_manager
 | `Patch failed: steam` | Файл loginusers.vdf отсутствует | Запустите Steam хотя бы раз на Windows |
 | `Failed patches: [...]` | Один или несколько патчей не применились | Сессия продолжится, но лаунчер может остаться залогиненным |
 | `Shadow Defender: not correct` | Неверный пароль Shadow Defender | Проверьте `SHADOW_DEFENDER_PASSWORD` |
+
+### Ошибки видеозаписи (streaming)
+
+| Лог | Причина | Решение |
+|-----|---------|---------|
+| `Starting FFmpeg stream` — поток не появляется в MediaMTX | FFmpeg не запустился | Проверьте `ffmpeg_path` в конфиге; убедитесь что `ffmpeg.exe` существует на Windows |
+| `Streaming enabled but session/geoip_client not provided` | Внутренняя ошибка конфигурации | Обновите пакет; проверьте что `app_config` передаётся воркеру |
+| `GeoIP: failed to download databases` | Linux-сервер не может достучаться до GitHub | Проверьте HTTPS-доступ наружу; GeoIP автоматически вернётся к ip-api.com |
+| `GeoIP: API lookup failed` | `ip-api.com` недоступен | Оверлей отобразится без города/провайдера; это не критично |
+| Поток зависает при просмотре | Низкая пропускная способность сети | Уменьшите `bitrate` или `fps`; понизьте `resolution` |
+| `ffmpeg.exe` удалён пользователем во время сессии | Пользователь удалил файл | `AfterDisconnect` использует `taskkill` — если файл удалён, процесс уже завершён |
+| Высокая нагрузка на GPU во время сессии | FFmpeg работает без ограничения FPS | Уменьшите `fps` до `1`; используйте `process_priority: LOW` |
+
+**Ручная проверка RTSP-потока:**
+
+```bash
+ffplay rtsp://192.168.1.200:8554/live/192-168-0-10
+# или
+vlc rtsp://192.168.1.200:8554/live/192-168-0-10
+```
+
+**Список активных RTSP-потоков** (через API MediaMTX):
+
+```bash
+curl http://192.168.1.200:9997/v3/paths/list | python3 -m json.tool
+```
 
 ### Как перезапустить
 
