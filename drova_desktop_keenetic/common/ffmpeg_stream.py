@@ -109,6 +109,39 @@ def _build_vf(params: OverlayParams, resolution: str) -> str:
     return ",".join(filters)
 
 
+def build_ffmpeg_args_idle(pc_ip: str, cfg: StreamingConfig) -> str:
+    """Return an FFmpeg invocation for always-on (session-less) mode.
+
+    Overlay shows the PC IP and a live clock so the stream is identifiable,
+    but has no session-specific data (no client IP, no game title).
+    """
+    rtsp_url = f"rtsp://{cfg.monitor_ip}:{cfg.monitor_port}/live/{stream_key(pc_ip)}"
+    w, h = cfg.resolution.split("x", 1)
+    filters = [
+        f"scale={w}:{h}",
+        "drawbox=x=0:y=H-48:w=W:h=48:color=black@0.75:t=fill",
+        _drawtext("Видеорегистрация DROVA.IO", "H-40", fontsize=13, fontcolor="cyan"),
+        _drawtext(
+            f"PC\\: {_esc(pc_ip)}  |  %{{localtime\\:%H\\:%M\\:%S}}",
+            "H-20",
+            fontcolor="yellow",
+        ),
+    ]
+    vf = ",".join(filters)
+    return (
+        f'"{cfg.ffmpeg_path}"'
+        f" -f gdigrab -framerate {cfg.fps} -i desktop"
+        f' -vf "{vf}"'
+        f" -c:v {cfg.encoder}"
+        f" -preset {cfg.encoder_preset}"
+        f" -tune ll"
+        f" -rc cbr"
+        f" -b:v {cfg.bitrate}"
+        f" -f rtsp"
+        f" {rtsp_url}"
+    )
+
+
 def build_ffmpeg_args(params: OverlayParams, cfg: StreamingConfig) -> str:
     """Return the FFmpeg invocation string (path + arguments).
 

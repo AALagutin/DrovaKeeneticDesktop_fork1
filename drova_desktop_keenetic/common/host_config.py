@@ -46,6 +46,7 @@ class StreamingConfig:
     process_priority: str = "LOW"     # LOW | BELOWNORMAL | NORMAL
     geoip_db_dir: str = "geoip_db"
     geoip_update_interval_days: int = 7
+    always_on: bool = False           # Keep streaming between sessions (debug/monitoring mode)
 
 
 @dataclass(frozen=True)

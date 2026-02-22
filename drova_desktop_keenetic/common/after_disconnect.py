@@ -17,15 +17,17 @@ class AfterDisconnect:
         client: SSHClientConnection,
         host_config: HostConfig,
         streaming_enabled: bool = False,
+        streaming_always_on: bool = False,
     ):
         self.client = client
         self.host_config = host_config
         self.streaming_enabled = streaming_enabled
+        self.streaming_always_on = streaming_always_on
 
     async def run(self) -> bool:
         await sleep(5)
 
-        if self.streaming_enabled:
+        if self.streaming_enabled and not self.streaming_always_on:
             self.logger.info("Stopping FFmpeg stream")
             await self.client.run(str(TaskKill(image="ffmpeg.exe")))
 
@@ -40,9 +42,9 @@ class AfterDisconnect:
             )
         )
         if result.exit_status:
-            # cmdtool.exe is missing (deleted by user). The exit flag was
-            # pre-scheduled in BeforeConnect while cmdtool was still alive,
-            # so a forced OS reboot is enough to properly exit Shadow Defender.
+            # cmdtool.exe is missing or SD service not responding.
+            # Fall back to a forced OS reboot; Shadow Defender will discard
+            # the shadow data on its own when it detects no valid exit command.
             self.logger.warning(
                 f"ShadowDefenderCLI failed (exit_status={result.exit_status}), "
                 "cmdtool.exe may have been deleted — falling back to forced reboot"

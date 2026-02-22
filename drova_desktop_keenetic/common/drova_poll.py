@@ -9,7 +9,9 @@ from expiringdict import ExpiringDict  # type: ignore
 from drova_desktop_keenetic.common.after_disconnect import AfterDisconnect
 from drova_desktop_keenetic.common.before_connect import BeforeConnect
 from drova_desktop_keenetic.common.cleanup_restrictions import CleanupRestrictions
+from drova_desktop_keenetic.common.commands import PsExec
 from drova_desktop_keenetic.common.drova import DrovaApiClient
+from drova_desktop_keenetic.common.ffmpeg_stream import build_ffmpeg_args_idle
 from drova_desktop_keenetic.common.geoip import GeoIPClient
 from drova_desktop_keenetic.common.helpers import (
     CheckDesktop,
@@ -60,6 +62,33 @@ class DrovaPollWorker:
     def _streaming_enabled(self) -> bool:
         return self.app_config.streaming.enabled
 
+    @property
+    def _streaming_always_on(self) -> bool:
+        return self.app_config.streaming.enabled and self.app_config.streaming.always_on
+
+    async def _start_idle_stream(self, conn) -> None:
+        """Start FFmpeg in always-on mode (no active session context needed)."""
+        cfg = self.app_config.streaming
+        ffmpeg_cmd = build_ffmpeg_args_idle(self.host_config.host, cfg)
+        psexec_cmd = str(
+            PsExec(
+                command=ffmpeg_cmd,
+                interactive=1,
+                detach=True,
+                low_priority=True,
+                accepteula=True,
+                user=self.host_config.login,
+                password=self.host_config.password,
+            )
+        )
+        self.logger.info(
+            "Starting idle FFmpeg stream (always-on): rtsp://%s:%d/live/%s",
+            cfg.monitor_ip,
+            cfg.monitor_port,
+            self.host_config.host.replace(".", "-"),
+        )
+        await conn.run(psexec_cmd)
+
     async def _handle_session(self, conn, token_cache: ExpiringDict) -> None:
         """Handle one complete session cycle: check -> wait -> prepare -> wait_finish -> cleanup."""
         check = CheckDesktop(conn, self.api_client, token_cache, product_catalog=self.product_catalog)
@@ -94,7 +123,11 @@ class DrovaPollWorker:
         await wait_finish.run()
 
         self.logger.info("Session finished - exiting shadow defender and rebooting")
-        after = AfterDisconnect(conn, self.host_config, streaming_enabled=self._streaming_enabled)
+        after = AfterDisconnect(
+            conn, self.host_config,
+            streaming_enabled=self._streaming_enabled,
+            streaming_always_on=self._streaming_always_on,
+        )
         await after.run()
 
     async def _maybe_cleanup_restrictions(self, conn) -> None:
@@ -114,11 +147,17 @@ class DrovaPollWorker:
         while not self._stop_event.is_set():
             try:
                 async with self._connect_ssh() as conn:
+                    if self._streaming_always_on:
+                        await self._start_idle_stream(conn)
                     try:
                         await self._handle_session(conn, self.token_cache)
                     except RebootRequired:
                         self.logger.info("Reboot required")
-                        after = AfterDisconnect(conn, self.host_config, streaming_enabled=self._streaming_enabled)
+                        after = AfterDisconnect(
+                            conn, self.host_config,
+                            streaming_enabled=self._streaming_enabled,
+                            streaming_always_on=self._streaming_always_on,
+                        )
                         await after.run()
             except (ChannelOpenError, OSError):
                 self.logger.debug("Cannot connect - PC unavailable or rebooting")
@@ -148,11 +187,19 @@ class DrovaPollWorker:
                         await wait_finish.run()
 
                         self.logger.info("Session finished - cleanup")
-                        after = AfterDisconnect(conn, self.host_config, streaming_enabled=self._streaming_enabled)
+                        after = AfterDisconnect(
+                            conn, self.host_config,
+                            streaming_enabled=self._streaming_enabled,
+                            streaming_always_on=self._streaming_always_on,
+                        )
                         await after.run()
                 except RebootRequired:
                     self.logger.info("Reboot required on startup check")
-                    after = AfterDisconnect(conn, self.host_config, streaming_enabled=self._streaming_enabled)
+                    after = AfterDisconnect(
+                        conn, self.host_config,
+                        streaming_enabled=self._streaming_enabled,
+                        streaming_always_on=self._streaming_always_on,
+                    )
                     await after.run()
         except (ChannelOpenError, OSError):
             self.logger.debug("Cannot connect on startup - PC unavailable or rebooting")

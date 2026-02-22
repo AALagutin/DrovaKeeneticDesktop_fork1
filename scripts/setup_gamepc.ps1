@@ -28,6 +28,12 @@
     After running this script, set the password via SD GUI → Administration,
     then update SHADOW_DEFENDER_PASSWORD in your Drova config.json.
 
+.PARAMETER StreamingRtspPort
+    TCP port used for RTSP streaming (default: 8554).
+    Must match streaming.monitor_port in your Drova config.json.
+    Used to create a permanent outbound firewall rule allowing FFmpeg
+    to push the stream to the monitoring server.
+
 .NOTES
     Shadow Defender password and GUI settings (Enable password control,
     Disable tray tip, Need password when committing) CANNOT be configured
@@ -37,7 +43,8 @@
 param(
     [switch]$SkipFFmpeg = $false,
     [string]$ShadowDefenderInstaller = "",
-    [string]$ShadowDefenderPassword  = ""
+    [string]$ShadowDefenderPassword  = "",
+    [int]$StreamingRtspPort = 8554
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,7 +62,7 @@ Write-Host ""
 # ---------------------------------------------------------------------------
 # 1. OpenSSH Server
 # ---------------------------------------------------------------------------
-Write-Host "[1/5] OpenSSH Server" -ForegroundColor Yellow
+Write-Host "[1/6] OpenSSH Server" -ForegroundColor Yellow
 
 $cap = Get-WindowsCapability -Online | Where-Object Name -like "OpenSSH.Server*"
 if ($cap.State -ne "Installed") {
@@ -125,7 +132,7 @@ Write-Host "  Default SSH shell -> PowerShell" -ForegroundColor Green
 # 2. PsExec
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[2/5] PsExec" -ForegroundColor Yellow
+Write-Host "[2/6] PsExec" -ForegroundColor Yellow
 
 $psexecDst = "$env:SystemRoot\System32\PsExec.exe"
 if (-not (Test-Path $psexecDst)) {
@@ -153,7 +160,7 @@ Write-Host "  EULA accepted (HKCU + HKLM)." -ForegroundColor Green
 # 3. FFmpeg  (optional)
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[3/5] FFmpeg" -ForegroundColor Yellow
+Write-Host "[3/6] FFmpeg" -ForegroundColor Yellow
 
 $ffmpegExe = "C:\ffmpeg\bin\ffmpeg.exe"
 if ($SkipFFmpeg) {
@@ -177,10 +184,60 @@ if ($SkipFFmpeg) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Shadow Defender
+# 4. Streaming Firewall Rules
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[4/5] Shadow Defender" -ForegroundColor Yellow
+Write-Host "[4/6] Streaming Firewall" -ForegroundColor Yellow
+
+# Allow FFmpeg to make outbound RTSP connections.
+# Windows Firewall may block new executables the first time they connect;
+# these persistent rules prevent that from silently breaking the stream.
+
+$streamingFwOk = $true
+
+# Rule 1: program rule for ffmpeg.exe (most specific — covers all ports/protocols)
+$fwFFmpeg = Get-NetFirewallRule -Name "Drova-FFmpeg-Out" -ErrorAction SilentlyContinue
+if (-not $fwFFmpeg) {
+    try {
+        New-NetFirewallRule -Name "Drova-FFmpeg-Out" `
+            -DisplayName "Drova FFmpeg streaming (outbound)" `
+            -Enabled True -Direction Outbound `
+            -Program $ffmpegExe `
+            -Action Allow | Out-Null
+        Write-Host "  Firewall rule 'Drova-FFmpeg-Out' created (program: ffmpeg.exe)." -ForegroundColor Green
+    } catch {
+        Write-Host "  Could not create FFmpeg program rule: $_" -ForegroundColor Yellow
+        $streamingFwOk = $false
+    }
+} else {
+    Write-Host "  Firewall rule 'Drova-FFmpeg-Out' already exists." -ForegroundColor Gray
+}
+
+# Rule 2: TCP outbound rule for the RTSP port (backup for custom ffmpeg paths)
+$fwRtspOut = Get-NetFirewallRule -Name "Drova-RTSP-Out" -ErrorAction SilentlyContinue
+if (-not $fwRtspOut) {
+    try {
+        New-NetFirewallRule -Name "Drova-RTSP-Out" `
+            -DisplayName "Drova RTSP outbound TCP $StreamingRtspPort" `
+            -Enabled True -Direction Outbound -Protocol TCP `
+            -RemotePort $StreamingRtspPort `
+            -Action Allow | Out-Null
+        Write-Host "  Firewall rule 'Drova-RTSP-Out' created (TCP out $StreamingRtspPort)." -ForegroundColor Green
+    } catch {
+        Write-Host "  Could not create RTSP port rule: $_" -ForegroundColor Yellow
+        $streamingFwOk = $false
+    }
+} else {
+    Write-Host "  Firewall rule 'Drova-RTSP-Out' already exists." -ForegroundColor Gray
+}
+
+Write-Host "  Streaming port: TCP $StreamingRtspPort  (change with -StreamingRtspPort if needed)" -ForegroundColor Gray
+
+# ---------------------------------------------------------------------------
+# 5. Shadow Defender
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "[5/6] Shadow Defender" -ForegroundColor Yellow
 
 $sdNeedsReboot  = $false
 $sdCmdToolOk    = $false
@@ -274,12 +331,13 @@ if ((Test-Path $CMDTOOL) -and -not $sdNeedsReboot) {
 # 5. Verification summary
 # ---------------------------------------------------------------------------
 Write-Host ""
-Write-Host "[5/5] Summary" -ForegroundColor Yellow
+Write-Host "[6/6] Summary" -ForegroundColor Yellow
 
 $checks = [ordered]@{
     "OpenSSH sshd running"       = ($sshdStatus -eq "Running")
     "PsExec in System32"         = (Test-Path $psexecDst)
     "FFmpeg installed"           = (Test-Path $ffmpegExe) -or $SkipFFmpeg
+    "Streaming firewall rules"   = $streamingFwOk
     "Shadow Defender installed"  = (Test-Path $CMDTOOL)
     "Shadow Defender service"    = (($sdSvc -ne $null) -and ($sdSvc.Status -eq "Running")) -or $sdNeedsReboot
     "CmdTool.exe responds"       = $sdCmdToolOk -or $sdNeedsReboot
