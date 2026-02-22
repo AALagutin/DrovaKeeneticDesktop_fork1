@@ -73,12 +73,13 @@ class BeforeConnect:
         cfg = self.app_config.streaming if self.app_config else None
         if not cfg or not cfg.enabled:
             return
-        if cfg.always_on:
-            self.logger.info("Streaming always-on mode — per-session stream start skipped")
-            return
         if not self.session or not self.geoip_client:
             self.logger.warning("Streaming enabled but session/geoip_client not provided — skipping")
             return
+
+        if cfg.always_on:
+            self.logger.info("Replacing idle stream with session stream")
+            await self.client.run(str(TaskKill(image="ffmpeg.exe")))
 
         self.logger.info("Resolving GeoIP for client %s", self.session.creator_ip)
         geo = await self.geoip_client.lookup(self.session.creator_ip)

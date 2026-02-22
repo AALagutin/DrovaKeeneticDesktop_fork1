@@ -17,17 +17,15 @@ class AfterDisconnect:
         client: SSHClientConnection,
         host_config: HostConfig,
         streaming_enabled: bool = False,
-        streaming_always_on: bool = False,
     ):
         self.client = client
         self.host_config = host_config
         self.streaming_enabled = streaming_enabled
-        self.streaming_always_on = streaming_always_on
 
     async def run(self) -> bool:
         await sleep(5)
 
-        if self.streaming_enabled and not self.streaming_always_on:
+        if self.streaming_enabled:
             self.logger.info("Stopping FFmpeg stream")
             await self.client.run(str(TaskKill(image="ffmpeg.exe")))
 

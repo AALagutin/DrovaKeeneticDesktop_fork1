@@ -126,7 +126,6 @@ class DrovaPollWorker:
         after = AfterDisconnect(
             conn, self.host_config,
             streaming_enabled=self._streaming_enabled,
-            streaming_always_on=self._streaming_always_on,
         )
         await after.run()
 
@@ -156,7 +155,6 @@ class DrovaPollWorker:
                         after = AfterDisconnect(
                             conn, self.host_config,
                             streaming_enabled=self._streaming_enabled,
-                            streaming_always_on=self._streaming_always_on,
                         )
                         await after.run()
             except (ChannelOpenError, OSError):
@@ -190,7 +188,6 @@ class DrovaPollWorker:
                         after = AfterDisconnect(
                             conn, self.host_config,
                             streaming_enabled=self._streaming_enabled,
-                            streaming_always_on=self._streaming_always_on,
                         )
                         await after.run()
                 except RebootRequired:
@@ -198,7 +195,6 @@ class DrovaPollWorker:
                     after = AfterDisconnect(
                         conn, self.host_config,
                         streaming_enabled=self._streaming_enabled,
-                        streaming_always_on=self._streaming_always_on,
                     )
                     await after.run()
         except (ChannelOpenError, OSError):
