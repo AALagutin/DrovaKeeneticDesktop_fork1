@@ -14,6 +14,7 @@ from drova_desktop_keenetic.common.contants import (
     WINDOWS_PASSWORD,
 )
 from drova_desktop_keenetic.common.drova import get_new_session
+from drova_desktop_keenetic.common.gamepc_diagnostic import GamePCDiagnostic
 from drova_desktop_keenetic.common.helpers import (
     CheckDesktop,
     RebootRequired,
@@ -109,7 +110,24 @@ class DrovaPoll:
         except:
             logger.exception("We have error")
 
+    async def _run_startup_diagnostic(self) -> None:
+        try:
+            async with connect_ssh(
+                host=self.windows_host,
+                username=self.windows_login,
+                password=self.windows_password,
+                known_hosts=None,
+                encoding="windows-1251",
+            ) as conn:
+                diagnostic = GamePCDiagnostic(conn, self.windows_host)
+                await diagnostic.run()
+        except (ChannelOpenError, OSError):
+            logger.info("Cannot connect for startup diagnostic — host unavailable or rebooting")
+        except Exception:
+            logger.exception("Startup diagnostic error")
+
     async def serve(self, wait_forever=False):
+        await self._run_startup_diagnostic()
         await self._waitif_session_desktop_exists()
 
         if wait_forever:

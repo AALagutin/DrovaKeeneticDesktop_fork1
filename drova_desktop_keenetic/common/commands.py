@@ -155,6 +155,27 @@ class RegQueryEsme(ICommandBuilder):
         return matches_server_id["server_id"], matches_auth_token[0]
 
 
+@dataclass
+class RegQuery(ICommandBuilder):
+    reg_path: str
+    value_name: str | None = None
+
+    def _build_command(self) -> str:
+        args = ["reg", "query", quote(self.reg_path)]
+        if self.value_name is not None:
+            args += ["/v", quote(self.value_name)]
+        return " ".join(args)
+
+    @staticmethod
+    def parse_value(stdout: str | bytes) -> str | None:
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("windows-1251")
+        r = re.compile(r"\s+\S+\s+REG_\w+\s+(?P<value>\S+)", re.MULTILINE)
+        if match := r.search(stdout):
+            return match.group("value")
+        return None
+
+
 class RegValueType(StrEnum):
     REG_SZ = "REG_SZ"
     REG_MULTI_SZ = "REG_MULTI_SZ"
