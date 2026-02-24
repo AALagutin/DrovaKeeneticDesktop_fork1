@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from asyncio import sleep
 from configparser import ConfigParser
 from pathlib import Path, PureWindowsPath
 from typing import Generator
@@ -258,9 +257,6 @@ class PatchWindowsSettings(IPatch):
         for result in results:
             if isinstance(result, Exception):
                 self.logger.error("Registry patch failed: %s", result)
-
-        await self.client.run("gpupdate /target:user /force", check=True)
-        await sleep(1)
 
         session_id = 1  # fallback
         qwinsta_result = await self.client.run(str(QWinSta()), check=False)
