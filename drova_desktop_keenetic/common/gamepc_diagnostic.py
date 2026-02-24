@@ -18,16 +18,16 @@ _ACTIVE_STATUSES = (StatusEnum.NEW, StatusEnum.HANDSHAKE, StatusEnum.ACTIVE)
 class GamePCDiagnostic(BaseDrovaMerchantWindows):
     """
     Запускается при старте воркера.
-    Если нет активных сессий — проверяет, что механизм ограничений работает:
-    входит в режим SD, применяет все ограничения, проверяет реестр,
-    выводит отчёт в лог, выходит из SD (что откатывает все изменения).
+    Если нет активных сессий — проверяет механизм ограничений:
+    входит в SD, применяет все патчи, проверяет реестр, логирует отчёт,
+    выходит из SD+reboot (откатывает все изменения).
     """
-
-    logger = logger.getChild("GamePCDiagnostic")
 
     def __init__(self, client: SSHClientConnection, host: str):
         super().__init__(client)
         self.host = host
+        # host встроен в имя логгера — не нужен префикс в каждом сообщении
+        self.logger = logger.getChild(host)
 
     # ------------------------------------------------------------------
     # Session check
@@ -38,103 +38,98 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
             server_id = await self.get_server_id()
             auth_token = await self.get_auth_token()
         except RebootRequired:
-            self.logger.warning(f"[{self.host}] Auth tokens not available — host needs reboot")
-            return True  # treat as "busy", skip diagnostic
+            self.logger.warning("sessions: auth tokens unavailable — host needs reboot")
+            return True
 
         session = await get_latest_session(server_id, auth_token)
         if session and session.status in _ACTIVE_STATUSES:
+            self.logger.info("sessions: active (%s) — diagnostic skipped", session.status)
             return True
+        self.logger.info("sessions: none")
         return False
 
     # ------------------------------------------------------------------
-    # Shadow Defender helpers
+    # Shadow Defender
     # ------------------------------------------------------------------
 
-    def _log_sd_output(self, label: str, result) -> None:
-        """Логирует stdout/stderr процесса SD CLI."""
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        if stdout:
-            for line in stdout.splitlines():
-                self.logger.info(f"[{self.host}] SD {label} stdout: {line}")
-        if stderr:
-            for line in stderr.splitlines():
-                self.logger.warning(f"[{self.host}] SD {label} stderr: {line}")
+    def _sd_log(self, label: str, result) -> None:
+        """Одна строка: SD <label>: OK/FAILED [— первая строка вывода]."""
+        first_out = next(
+            (l.strip() for l in (result.stdout or "").splitlines() if l.strip()), ""
+        )
         if result.exit_status:
-            self.logger.warning(f"[{self.host}] SD {label} exit_status={result.exit_status}")
+            self.logger.warning(
+                "SD %s: FAILED code=%s%s", label, result.exit_status,
+                f" — {first_out}" if first_out else "",
+            )
+        else:
+            self.logger.info(
+                "SD %s: OK%s", label, f" — {first_out}" if first_out else ""
+            )
+        if stderr := (result.stderr or "").strip():
+            self.logger.warning("SD %s stderr: %s", label, stderr[:200])
 
     async def _sd_log_status(self) -> None:
-        """Запрашивает текущий статус защиты SD (/list) и пишет в лог."""
+        """Одна строка: SD status: Drive C: Protected; Drive D: Not protected."""
         result = await self.client.run(
-            str(
-                ShadowDefenderCLI(
-                    password=os.environ[SHADOW_DEFENDER_PASSWORD],
-                    actions=["list"],
-                )
-            )
+            str(ShadowDefenderCLI(password=os.environ[SHADOW_DEFENDER_PASSWORD], actions=["list"]))
         )
-        self._log_sd_output("list", result)
+        lines = [l.strip() for l in (result.stdout or "").splitlines() if l.strip()]
+        self.logger.info("SD status: %s", "; ".join(lines) if lines else "(no output)")
 
     async def _sd_enter(self) -> None:
-        self.logger.info(f"[{self.host}] Entering Shadow Defender mode")
         result = await self.client.run(
-            str(
-                ShadowDefenderCLI(
-                    password=os.environ[SHADOW_DEFENDER_PASSWORD],
-                    actions=["enter"],
-                    drives=os.environ[SHADOW_DEFENDER_DRIVES],
-                )
-            )
+            str(ShadowDefenderCLI(
+                password=os.environ[SHADOW_DEFENDER_PASSWORD],
+                actions=["enter"],
+                drives=os.environ[SHADOW_DEFENDER_DRIVES],
+            ))
         )
-        self._log_sd_output("enter", result)
+        self._sd_log("enter", result)
         await sleep(2)
         await self._sd_log_status()
 
     async def _sd_exit_reboot(self) -> None:
-        self.logger.info(f"[{self.host}] Exiting Shadow Defender and rebooting (cleanup)")
         result = await self.client.run(
-            str(
-                ShadowDefenderCLI(
-                    password=os.environ[SHADOW_DEFENDER_PASSWORD],
-                    actions=["exit", "reboot"],
-                    drives=os.environ[SHADOW_DEFENDER_DRIVES],
-                )
-            )
+            str(ShadowDefenderCLI(
+                password=os.environ[SHADOW_DEFENDER_PASSWORD],
+                actions=["exit", "reboot"],
+                drives=os.environ[SHADOW_DEFENDER_DRIVES],
+            ))
         )
-        self._log_sd_output("exit+reboot", result)
+        self._sd_log("exit+reboot", result)
 
     # ------------------------------------------------------------------
     # Apply restrictions
     # ------------------------------------------------------------------
 
-    async def _apply_restrictions(self) -> None:
-        self.logger.info(f"[{self.host}] Applying all restrictions")
+    async def _apply_restrictions(self) -> list[str]:
+        """Применяет все патчи. Возвращает список имён упавших патчей."""
+        failed: list[str] = []
         async with self.client.start_sftp_client() as sftp:
             for patch_class in ALL_PATCHES:
-                self.logger.info(f"[{self.host}] Patch: {patch_class.NAME}")
                 if patch_class.TASKKILL_IMAGE:
                     await self.client.run(str(TaskKill(image=patch_class.TASKKILL_IMAGE)))
                 await sleep(0.2)
-                patcher = patch_class(self.client, sftp)
                 try:
-                    await patcher.patch()
+                    await patch_class(self.client, sftp).patch()
+                    self.logger.info("patch %-20s OK", patch_class.NAME)
                 except Exception:
-                    self.logger.exception(f"[{self.host}] Patch {patch_class.NAME} failed — skipped")
+                    self.logger.warning("patch %-20s FAILED", patch_class.NAME, exc_info=True)
+                    failed.append(patch_class.NAME)
+        return failed
 
     # ------------------------------------------------------------------
     # Verify restrictions
     # ------------------------------------------------------------------
 
     async def _verify_patch(self, patch: RegistryPatch) -> bool:
-        result = await self.client.run(
-            str(RegQuery(patch.reg_directory, patch.value_name))
-        )
+        result = await self.client.run(str(RegQuery(patch.reg_directory, patch.value_name)))
         if result.exit_status != 0:
             return False
         return RegQuery.parse_value(result.stdout) is not None
 
     async def _verify_all_restrictions(self) -> dict[str, bool]:
-        # PatchWindowsSettings does not use sftp, so None is safe here
         settings = PatchWindowsSettings(self.client, None)  # type: ignore[arg-type]
         results: dict[str, bool] = {}
         for patch in settings._get_patches():
@@ -147,43 +142,44 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
     # ------------------------------------------------------------------
 
     def _log_report(self, verification: dict[str, bool]) -> None:
+        total = len(verification)
         ok_count = sum(1 for v in verification.values() if v)
-        fail_count = len(verification) - ok_count
-        overall = "OK" if fail_count == 0 else f"FAILED ({fail_count} missing)"
+        missing = [k for k, v in verification.items() if not v]
 
-        self.logger.info(f"[{self.host}] ===== GamePC Diagnostic Report — {overall} =====")
-        for key, ok in verification.items():
-            mark = "+" if ok else "!"
-            self.logger.info(f"[{self.host}]   [{mark}] {key}")
-        self.logger.info(
-            f"[{self.host}] ===== End Report: {ok_count}/{len(verification)} restrictions set ====="
-        )
+        if not missing:
+            self.logger.info("restrictions: %d/%d OK", ok_count, total)
+        else:
+            self.logger.warning(
+                "restrictions: %d/%d OK — %d MISSING", ok_count, total, len(missing)
+            )
+            for key in missing:
+                self.logger.warning("  missing: %s", key)
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
-        self.logger.info(f"[{self.host}] Starting startup diagnostic")
-
+        self.logger.info("diagnostic: start")
         try:
             if await self._has_active_sessions():
-                self.logger.info(f"[{self.host}] Active session found — diagnostic skipped")
                 return
-
-            self.logger.info(f"[{self.host}] No active sessions — running restriction test")
 
             await self._sd_enter()
 
             try:
-                await self._apply_restrictions()
+                patch_failures = await self._apply_restrictions()
+                if patch_failures:
+                    self.logger.warning("patches failed: %s", ", ".join(patch_failures))
+
                 verification = await self._verify_all_restrictions()
                 self._log_report(verification)
             finally:
-                # Always exit SD + reboot to revert all test changes
                 await self._sd_exit_reboot()
 
         except RebootRequired:
-            self.logger.warning(f"[{self.host}] RebootRequired during diagnostic — skipping")
+            self.logger.warning("diagnostic: aborted — RebootRequired")
         except Exception:
-            self.logger.exception(f"[{self.host}] Diagnostic error")
+            self.logger.exception("diagnostic: error")
+
+        self.logger.info("diagnostic: done")
