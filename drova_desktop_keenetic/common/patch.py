@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from asyncio import sleep
@@ -244,17 +245,19 @@ class PatchWindowsSettings(IPatch):
         return None
 
     async def patch(self) -> None:
-        # Run patches sequentially to stay within the SSH server's MaxSessions
-        # limit.  Parallel create_task() previously opened 20+ channels at once,
-        # causing ChannelOpenError on most of them and leaving tasks' exceptions
-        # silently unretrieved.
-        for p in self._get_patches():
-            try:
-                await self._apply_reg_patch(p)
-            except Exception:
-                logger.warning(
-                    "reg patch failed: %s\\%s", p.reg_directory, p.value_name, exc_info=True
-                )
+        sem = asyncio.Semaphore(5)
+
+        async def _limited(patch: RegistryPatch) -> None:
+            async with sem:
+                await self._apply_reg_patch(patch)
+
+        results = await asyncio.gather(
+            *[_limited(p) for p in self._get_patches()],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error("Registry patch failed: %s", result)
 
         await self.client.run("gpupdate /target:user /force", check=True)
         await sleep(1)
