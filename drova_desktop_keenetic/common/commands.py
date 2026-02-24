@@ -109,7 +109,11 @@ class ShadowDefenderCLI(ICommandBuilder):
     drives: str | None = None
 
     def _build_command(self) -> str:
-        command = [quote(r"C:\Program Files\Shadow Defender\CmdTool.exe")]
+        # & is the PowerShell call operator: without it PowerShell treats the
+        # double-quoted path as a string expression rather than a command.
+        # In cmd.exe "& cmd" is equivalent to running cmd after an empty
+        # first token, so the & prefix is safe for both shells.
+        command = ["&", quote(r"C:\Program Files\Shadow Defender\CmdTool.exe")]
         command += [f'/pwd:"{self.password}"']
         for action in self.actions:
             match action:
