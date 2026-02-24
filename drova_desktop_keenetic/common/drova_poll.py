@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 class DrovaPoll:
     def __init__(
         self,
-        windows_host: str = os.environ[WINDOWS_HOST],
-        windows_login: str = os.environ[WINDOWS_LOGIN],
-        windows_password: str = os.environ[WINDOWS_PASSWORD],
+        windows_host: str | None = None,
+        windows_login: str | None = None,
+        windows_password: str | None = None,
     ):
-        self.windows_host = windows_host
-        self.windows_login = windows_login
-        self.windows_password = windows_password
+        self.windows_host = windows_host if windows_host is not None else os.environ[WINDOWS_HOST]
+        self.windows_login = windows_login if windows_login is not None else os.environ[WINDOWS_LOGIN]
+        self.windows_password = windows_password if windows_password is not None else os.environ[WINDOWS_PASSWORD]
 
         self.stop_future = asyncio.get_event_loop().create_future()
 

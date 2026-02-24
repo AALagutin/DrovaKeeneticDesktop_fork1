@@ -25,15 +25,15 @@ logger = logging.getLogger(__name__)
 class DrovaSocket:
     def __init__(
         self,
-        drova_socket_listen: int = int(os.environ[DROVA_SOCKET_LISTEN] if DROVA_SOCKET_LISTEN in os.environ else 0),
-        windows_host: str = os.environ[WINDOWS_HOST],
-        windows_login: str = os.environ[WINDOWS_LOGIN],
-        windows_password: str = os.environ[WINDOWS_PASSWORD],
+        drova_socket_listen: int | None = None,
+        windows_host: str | None = None,
+        windows_login: str | None = None,
+        windows_password: str | None = None,
     ):
-        self.drova_socket_listen = drova_socket_listen
-        self.windows_host = windows_host
-        self.windows_login = windows_login
-        self.windows_password = windows_password
+        self.drova_socket_listen = drova_socket_listen if drova_socket_listen is not None else int(os.environ.get(DROVA_SOCKET_LISTEN, 0))
+        self.windows_host = windows_host if windows_host is not None else os.environ[WINDOWS_HOST]
+        self.windows_login = windows_login if windows_login is not None else os.environ[WINDOWS_LOGIN]
+        self.windows_password = windows_password if windows_password is not None else os.environ[WINDOWS_PASSWORD]
 
         self.server: asyncio.Server | None = None
 
