@@ -48,12 +48,9 @@ class EpicGamesAuthDiscard(IPatch):
 
     async def _patch(self, file: Path) -> None:
         config = ConfigParser(strict=False)
-        self.logger.info("read GameUserSettings.ini")
         config.read(file, encoding="UTF-8")
-
         config.remove_section("RememberMe")
         config.remove_section("Offline")
-        self.logger.info("Write without auth section")
         with open(file, "w") as f:
             config.write(f)
 
@@ -233,11 +230,7 @@ class PatchWindowsSettings(IPatch):
         )
 
     async def _apply_reg_patch(self, patch: RegistryPatch) -> None:
-        self.logger.info(f"Run {str(RegAdd(patch.reg_directory))}")
         await self.client.run(str(RegAdd(patch.reg_directory)), check=True)
-        self.logger.info(
-            f"Run {str(RegAdd(patch.reg_directory, value_name=patch.value_name, value_type=patch.value_type, value=patch.value))}"
-        )
         await self.client.run(
             str(
                 RegAdd(patch.reg_directory, value_name=patch.value_name, value_type=patch.value_type, value=patch.value)

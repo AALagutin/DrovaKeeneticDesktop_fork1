@@ -43,15 +43,13 @@ class DrovaSocket:
             await self.server.wait_closed()
 
     async def server_accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        logger.debug(f"Accept! to {self.windows_host}:7985")
-        logger.debug(reader)
-        logger.debug(writer)
+        logger.debug("socket: accept %s:7985", self.windows_host)
 
         target_socket = await asyncio.open_connection(self.windows_host, 7985)
         drova_pass = DrovaBinaryProtocol(Socket(reader, writer), Socket(*target_socket))
-        logger.info("Wait drova windows-server answer")
+        logger.info("socket: awaiting server ack")
         if await drova_pass.wait_server_answered():
-            logger.info("Server answered - connect and prepare windows host")
+            logger.info("socket: server acked — starting session flow")
             await self._run_server_acked()
         else:
             await drova_pass.clear()
@@ -64,22 +62,17 @@ class DrovaSocket:
             known_hosts=None,
             encoding="windows-1251",
         ) as conn:
-            check_desktop = CheckDesktop(conn)
-            is_desktop = await check_desktop.run()
-            logger.info(f"Session is Desktop! -> {is_desktop}")
+            is_desktop = await CheckDesktop(conn).run()
 
             if is_desktop:
-                logger.info("Start beforeConnect")
-                before_connect = BeforeConnect(conn)
-                await before_connect.run()
+                logger.info("socket: session active — starting setup")
+                await BeforeConnect(conn).run()
 
-                logger.info("Wait finish session")
-                wait_finish_session = WaitFinishOrAbort(conn)
-                await wait_finish_session.run()
+                logger.info("socket: waiting for session end")
+                await WaitFinishOrAbort(conn).run()
 
-                logger.info("Clear shadow defender and restart")
-                after_disconnect_client = AfterDisconnect(conn)
-                await after_disconnect_client.run()
+                logger.info("socket: session ended — running cleanup")
+                await AfterDisconnect(conn).run()
 
     async def _waitif_session_desktop_exists(self):
         async with connect_ssh(
@@ -89,16 +82,12 @@ class DrovaSocket:
             known_hosts=None,
             encoding="windows-1251",
         ) as conn:
-            check_desktop = CheckDesktop(conn)
-            is_desktop = await check_desktop.run()
-            if is_desktop:
-                logger.info("Wait finish session")
-                wait_finish_session = WaitFinishOrAbort(conn)
-                await wait_finish_session.run()
+            if await CheckDesktop(conn).run():
+                logger.info("socket: existing session — waiting for end")
+                await WaitFinishOrAbort(conn).run()
 
-                logger.info("Clear shadow defender and restart")
-                after_disconnect_client = AfterDisconnect(conn)
-                await after_disconnect_client.run()
+                logger.info("socket: session ended — running cleanup")
+                await AfterDisconnect(conn).run()
 
     async def serve(self, wait_forever=False):
         await self._waitif_session_desktop_exists()
@@ -106,7 +95,7 @@ class DrovaSocket:
         self.server = await asyncio.start_server(self.server_accept, "0.0.0.0", self.drova_socket_listen, limit=1)
 
         addrs = ", ".join(str(sock.getsockname()) for sock in self.server.sockets)
-        logger.info(f"Serving on {addrs}")
+        logger.info("socket: serving on %s", addrs)
 
         if not wait_forever:
             await self.server.start_serving()

@@ -53,12 +53,9 @@ class BaseDrovaMerchantWindows:
         return self.dict_store["server_id"], self.dict_store["auth_token"]
 
     async def check_desktop_session(self, session: SessionsEntity) -> bool:
-        self.logger.info(f"Check session product_id =  {session.product_id}")
         if session.product_id == UUID_DESKTOP:
             return True
-        # check alloed only on desktop
         product_info = await get_product_info(session.product_id, auth_token=await self.get_auth_token())
-        self.logger.info(f"product_info : {product_info}")
         return product_info.use_default_desktop
 
 
@@ -66,22 +63,21 @@ class CheckDesktop(BaseDrovaMerchantWindows):
     logger = logger.getChild("CheckDesktop")
 
     async def run(self) -> bool:
-
-        self.logger.info(f"Start read latest session with token {await self.get_auth_token()}")
         session = await get_latest_session(await self.get_server_id(), await self.get_auth_token())
-        self.logger.debug(f"Session : {session}")
+        self.logger.debug("session: %s", session)
 
         if not session:
             return False
 
         if session.status in (StatusEnum.HANDSHAKE, StatusEnum.ACTIVE, StatusEnum.NEW):
-            return await self.check_desktop_session(session)
-        # by default, if session not is started (aborted/finished) return false
+            is_desktop = await self.check_desktop_session(session)
+            self.logger.info("session: status=%s is_desktop=%s", session.status, is_desktop)
+            return is_desktop
         return False
 
 
 class WaitFinishOrAbort(BaseDrovaMerchantWindows):
-    logger = logger.getChild("CheckDesktop")
+    logger = logger.getChild("WaitFinishOrAbort")
 
     async def run(self) -> bool:
         while True:

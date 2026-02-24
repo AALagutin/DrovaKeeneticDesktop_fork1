@@ -21,13 +21,9 @@ class BeforeConnect:
         self.client = client
 
     async def run(self) -> bool:
-
-        self.logger.info("open sftp")
+        self.logger.info("before_connect: start")
         try:
             async with self.client.start_sftp_client() as sftp:
-
-                self.logger.info(f"start shadow")
-                # start shadow mode
                 await self.client.run(
                     str(
                         ShadowDefenderCLI(
@@ -40,16 +36,16 @@ class BeforeConnect:
                 await sleep(2)
 
                 for path in ALL_PATCHES:
-                    self.logger.info(f"prepare {path.NAME}")
                     if path.TASKKILL_IMAGE:
                         await self.client.run(str(TaskKill(image=path.TASKKILL_IMAGE)))
                     await sleep(0.2)
-                    pather = path(self.client, sftp)
                     try:
-                        await pather.patch()
+                        await path(self.client, sftp).patch()
                     except Exception:
-                        logger.exception(f"Problem with patch apply - {path.NAME} skipped!")
+                        self.logger.warning("patch %s: FAILED — skipped", path.NAME, exc_info=True)
 
         except Exception:
-            logger.exception("We have problem")
+            self.logger.exception("before_connect: error")
+
+        self.logger.info("before_connect: done")
         return True

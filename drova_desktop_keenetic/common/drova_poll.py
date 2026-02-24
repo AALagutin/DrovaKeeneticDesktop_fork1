@@ -49,34 +49,29 @@ class DrovaPoll:
                     encoding="windows-1251",
                 ) as conn:
                     try:
-                        # check reboot before close session
                         check = CheckDesktop(conn)
                         is_desktop_session = await check.run()
 
                         if not is_desktop_session:
-                            wait_new_desktop_session = WaitNewDesktopSession(conn)
-                            is_desktop_session = await wait_new_desktop_session.run()
+                            is_desktop_session = await WaitNewDesktopSession(conn).run()
 
                         if is_desktop_session:
-                            logger.info("Waited desktop - clear this")
-                            before_connect = BeforeConnect(conn)
-                            await before_connect.run()
-                            logger.info("Wait finish session")
-                            wait_finish_session = WaitFinishOrAbort(conn)
-                            await wait_finish_session.run()
+                            logger.info("poll: session active — starting setup")
+                            await BeforeConnect(conn).run()
 
-                            logger.info("Clear shadow defender and restart")
-                            after_disconnect_client = AfterDisconnect(conn)
-                            await after_disconnect_client.run()
+                            logger.info("poll: waiting for session end")
+                            await WaitFinishOrAbort(conn).run()
+
+                            logger.info("poll: session ended — running cleanup")
+                            await AfterDisconnect(conn).run()
                     except RebootRequired:
-                        logger.info("Reboot required received!")
-                        after_disconnect_client = AfterDisconnect(conn)
-                        await after_disconnect_client.run()
+                        logger.warning("poll: reboot required — running cleanup")
+                        await AfterDisconnect(conn).run()
 
             except (ChannelOpenError, OSError):
-                logger.info("Fail connect to windows - gaming or unavailable(reboot)")
+                logger.debug("poll: ssh unreachable")
             except:
-                logger.exception("We have error")
+                logger.exception("poll: unexpected error")
 
             await asyncio.sleep(1)
 
@@ -93,22 +88,17 @@ class DrovaPoll:
                 encoding="windows-1251",
             ) as conn:
                 try:
-                    check_desktop = CheckDesktop(conn)
-                    is_desktop = await check_desktop.run()
-                    if is_desktop:
-                        logger.info("Wait finish session")
-                        wait_finish_session = WaitFinishOrAbort(conn)
-                        await wait_finish_session.run()
+                    if await CheckDesktop(conn).run():
+                        logger.info("poll: existing session — waiting for end")
+                        await WaitFinishOrAbort(conn).run()
 
-                        logger.info("Clear shadow defender and restart")
-                        after_disconnect_client = AfterDisconnect(conn)
-                        await after_disconnect_client.run()
+                        logger.info("poll: session ended — running cleanup")
+                        await AfterDisconnect(conn).run()
                 except RebootRequired:
-                    logger.info("Reboot required received!")
-                    after_disconnect_client = AfterDisconnect(conn)
-                    await after_disconnect_client.run()
+                    logger.warning("poll: reboot required — running cleanup")
+                    await AfterDisconnect(conn).run()
         except:
-            logger.exception("We have error")
+            logger.exception("poll: startup check error")
 
     async def _run_startup_diagnostic(self) -> None:
         try:
@@ -119,14 +109,14 @@ class DrovaPoll:
                 known_hosts=None,
                 encoding="windows-1251",
             ) as conn:
-                diagnostic = GamePCDiagnostic(conn, self.windows_host)
-                await diagnostic.run()
+                await GamePCDiagnostic(conn, self.windows_host).run()
         except (ChannelOpenError, OSError):
-            logger.info("Cannot connect for startup diagnostic — host unavailable or rebooting")
+            logger.warning("diagnostic: host unreachable (rebooting?)")
         except Exception:
-            logger.exception("Startup diagnostic error")
+            logger.exception("diagnostic: unexpected error")
 
     async def serve(self, wait_forever=False):
+        logger.info("worker: start host=%s", self.windows_host)
         await self._run_startup_diagnostic()
         await self._waitif_session_desktop_exists()
 
