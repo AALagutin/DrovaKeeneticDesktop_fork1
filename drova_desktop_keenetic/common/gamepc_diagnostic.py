@@ -50,9 +50,34 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
     # Shadow Defender helpers
     # ------------------------------------------------------------------
 
+    def _log_sd_output(self, label: str, result) -> None:
+        """Логирует stdout/stderr процесса SD CLI."""
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                self.logger.info(f"[{self.host}] SD {label} stdout: {line}")
+        if stderr:
+            for line in stderr.splitlines():
+                self.logger.warning(f"[{self.host}] SD {label} stderr: {line}")
+        if result.exit_status:
+            self.logger.warning(f"[{self.host}] SD {label} exit_status={result.exit_status}")
+
+    async def _sd_log_status(self) -> None:
+        """Запрашивает текущий статус защиты SD (/list) и пишет в лог."""
+        result = await self.client.run(
+            str(
+                ShadowDefenderCLI(
+                    password=os.environ[SHADOW_DEFENDER_PASSWORD],
+                    actions=["list"],
+                )
+            )
+        )
+        self._log_sd_output("list", result)
+
     async def _sd_enter(self) -> None:
         self.logger.info(f"[{self.host}] Entering Shadow Defender mode")
-        await self.client.run(
+        result = await self.client.run(
             str(
                 ShadowDefenderCLI(
                     password=os.environ[SHADOW_DEFENDER_PASSWORD],
@@ -61,11 +86,13 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
                 )
             )
         )
+        self._log_sd_output("enter", result)
         await sleep(2)
+        await self._sd_log_status()
 
     async def _sd_exit_reboot(self) -> None:
         self.logger.info(f"[{self.host}] Exiting Shadow Defender and rebooting (cleanup)")
-        await self.client.run(
+        result = await self.client.run(
             str(
                 ShadowDefenderCLI(
                     password=os.environ[SHADOW_DEFENDER_PASSWORD],
@@ -74,6 +101,7 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
                 )
             )
         )
+        self._log_sd_output("exit+reboot", result)
 
     # ------------------------------------------------------------------
     # Apply restrictions
