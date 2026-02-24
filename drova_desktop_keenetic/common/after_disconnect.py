@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 
 
 class AfterDisconnect:
-    logger = logger.getChild("BeforeConnect")
+    logger = logger.getChild("AfterDisconnect")
 
     def __init__(self, client: SSHClientConnection):
         self.client = client
 
     async def run(self) -> bool:
-        self.logger.info("exit from shadow and reboot")
+        self.logger.info("after_disconnect: SD exit+reboot")
         await sleep(5)
         # exit shadow mode and reboot
         await self.client.run(

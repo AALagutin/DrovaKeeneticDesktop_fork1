@@ -1,6 +1,6 @@
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from asyncio import create_task, sleep, wait
 from configparser import ConfigParser
 from pathlib import Path, PureWindowsPath
 from typing import Generator
@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from drova_desktop_keenetic.common.commands import (
     PsExec,
+    QWinSta,
     RegAdd,
     RegValueType,
 )
@@ -48,12 +49,9 @@ class EpicGamesAuthDiscard(IPatch):
 
     async def _patch(self, file: Path) -> None:
         config = ConfigParser(strict=False)
-        self.logger.info("read GameUserSettings.ini")
         config.read(file, encoding="UTF-8")
-
         config.remove_section("RememberMe")
         config.remove_section("Offline")
-        self.logger.info("Write without auth section")
         with open(file, "w") as f:
             config.write(f)
 
@@ -233,11 +231,7 @@ class PatchWindowsSettings(IPatch):
         )
 
     async def _apply_reg_patch(self, patch: RegistryPatch) -> None:
-        self.logger.info(f"Run {str(RegAdd(patch.reg_directory))}")
         await self.client.run(str(RegAdd(patch.reg_directory)), check=True)
-        self.logger.info(
-            f"Run {str(RegAdd(patch.reg_directory, value_name=patch.value_name, value_type=patch.value_type, value=patch.value))}"
-        )
         await self.client.run(
             str(
                 RegAdd(patch.reg_directory, value_name=patch.value_name, value_type=patch.value_type, value=patch.value)
@@ -250,12 +244,33 @@ class PatchWindowsSettings(IPatch):
         return None
 
     async def patch(self) -> None:
-        tasks = (create_task(self._apply_reg_patch(patch)) for patch in self._get_patches())
-        await wait(tasks)
+        sem = asyncio.Semaphore(5)
 
-        await self.client.run("gpupdate /target:user /force", check=True)
-        await sleep(1)
-        await self.client.run(str(PsExec(command="explorer.exe")), check=False)
+        async def _limited(patch: RegistryPatch) -> None:
+            async with sem:
+                await self._apply_reg_patch(patch)
+
+        results = await asyncio.gather(
+            *[_limited(p) for p in self._get_patches()],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error("Registry patch failed: %s", result)
+
+        session_id = 1  # fallback
+        qwinsta_result = await self.client.run(str(QWinSta()), check=False)
+        self.logger.info("qwinsta exit_status=%r stdout=%r", qwinsta_result.exit_status, qwinsta_result.stdout)
+        if not (qwinsta_result.exit_status or getattr(qwinsta_result, "returncode", None)):
+            stdout = qwinsta_result.stdout
+            if stdout:
+                detected = QWinSta.parse_active_session_id(stdout)
+                if detected is not None:
+                    session_id = detected
+        self.logger.info("starting explorer.exe in session %d", session_id)
+        psexec_cmd = str(PsExec(command="explorer.exe", interactive=session_id, user="", password=""))
+        psexec_result = await self.client.run(psexec_cmd, check=False)
+        self.logger.info("psexec exit_status=%r stderr=%r", psexec_result.exit_status, psexec_result.stderr)
 
 
 ALL_PATCHES = (EpicGamesAuthDiscard, SteamAuthDiscard, UbisoftAuthDiscard, WargamingAuthDiscard, PatchWindowsSettings)

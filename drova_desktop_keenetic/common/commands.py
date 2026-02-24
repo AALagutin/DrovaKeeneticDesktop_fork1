@@ -35,8 +35,8 @@ class PsExec(ICommandBuilder):
     interactive: int | None = field(kw_only=True, default=1)
     accepteula: bool = True
     detach: bool = True
-    user: str = os.environ[WINDOWS_LOGIN]
-    password: str = os.environ[WINDOWS_PASSWORD]
+    user: str = field(default_factory=lambda: os.environ[WINDOWS_LOGIN])
+    password: str = field(default_factory=lambda: os.environ[WINDOWS_PASSWORD])
 
     def _build_command(self) -> str:
         command = ["psexec"]
@@ -109,7 +109,11 @@ class ShadowDefenderCLI(ICommandBuilder):
     drives: str | None = None
 
     def _build_command(self) -> str:
-        command = [quote(r"C:\Program Files\Shadow Defender\CmdTool.exe")]
+        # & is the PowerShell call operator: without it PowerShell treats the
+        # double-quoted path as a string expression rather than a command.
+        # In cmd.exe "& cmd" is equivalent to running cmd after an empty
+        # first token, so the & prefix is safe for both shells.
+        command = ["&", quote(r"C:\Program Files\Shadow Defender\CmdTool.exe")]
         command += [f'/pwd:"{self.password}"']
         for action in self.actions:
             match action:
@@ -136,6 +140,20 @@ class RegQueryEsme(ICommandBuilder):
         return " ".join(("reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers", "/s", "/f", "auth_token"))
 
     @staticmethod
+    def parseAllAuthCodes(stdout: bytes) -> list[tuple[str, str]]:
+        """Parse all (server_id, auth_token) pairs from registry output.
+
+        Correctly pairs each server_id with its own auth_token even when
+        multiple server registrations are present.
+        """
+        text = stdout.decode("windows-1251")
+        r_pair = re.compile(
+            r"servers\\(?P<server_id>\S+)\s+auth_token\s+REG_SZ\s+(?P<auth_token>\S+)",
+            re.MULTILINE,
+        )
+        return [(m.group("server_id"), m.group("auth_token")) for m in r_pair.finditer(text)]
+
+    @staticmethod
     def parseAuthCode(stdout: bytes) -> tuple[str, str]:
         r_auth_token = re.compile(r"auth_token\s+REG_SZ\s+(?P<auth_token>\S+)", re.MULTILINE)
 
@@ -153,6 +171,54 @@ class RegQueryEsme(ICommandBuilder):
             raise NotFoundAuthCode()
 
         return matches_server_id["server_id"], matches_auth_token[0]
+
+
+@dataclass
+class QWinSta(ICommandBuilder):
+    def _build_command(self) -> str:
+        return "qwinsta"
+
+    @staticmethod
+    def parse_active_session_id(stdout: bytes | str) -> int | None:
+        if isinstance(stdout, bytes):
+            text = stdout.decode("windows-1251", errors="replace")
+        else:
+            text = stdout
+        # qwinsta output: "rdp-tcp#0  username  2  Active ..."
+        # Russian Windows uses "Активный" instead of "Active"
+        match = re.search(r"\s+(\d+)\s+(?:Active|Активный)\b", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return None
+
+
+@dataclass
+class RegDeleteKey(ICommandBuilder):
+    reg_path: str
+
+    def _build_command(self) -> str:
+        return f"reg delete {quote(self.reg_path)} /f"
+
+
+@dataclass
+class RegQuery(ICommandBuilder):
+    reg_path: str
+    value_name: str | None = None
+
+    def _build_command(self) -> str:
+        args = ["reg", "query", quote(self.reg_path)]
+        if self.value_name is not None:
+            args += ["/v", quote(self.value_name)]
+        return " ".join(args)
+
+    @staticmethod
+    def parse_value(stdout: str | bytes) -> str | None:
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("windows-1251")
+        r = re.compile(r"\s+\S+\s+REG_\w+\s+(?P<value>\S+)", re.MULTILINE)
+        if match := r.search(stdout):
+            return match.group("value")
+        return None
 
 
 class RegValueType(StrEnum):

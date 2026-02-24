@@ -35,7 +35,7 @@ async def simple_passthrought(reader: StreamReader, writer: StreamWriter) -> Non
         else:
             writer.close()
             await writer.wait_closed()
-            logger.info("Stop reading")
+            logger.debug("Stop reading")
             return
 
 
@@ -59,7 +59,7 @@ async def server_need_reply(reader: StreamReader, writer: StreamWriter, is_answe
         else:
             writer.close()
             await writer.wait_closed()
-            logger.info("Stop reading")
+            logger.debug("Stop reading")
             if not is_answered.done():
                 is_answered.set_result(False)
             return
