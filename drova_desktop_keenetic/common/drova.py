@@ -51,6 +51,15 @@ class ProductInfo(BaseModel):
     title: str
 
 
+async def check_credentials(server_id: str, auth_token: str) -> bool:
+    """Returns True if (server_id, auth_token) are accepted by Drova API (HTTP 200)."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            URL_SESSIONS, data={"serveri_id": server_id}, headers={"X-Auth-Token": auth_token}
+        ) as resp:
+            return resp.status == 200
+
+
 async def get_latest_session(server_id: str, auth_token: str) -> SessionsEntity | None:
     async with aiohttp.ClientSession() as session:
         async with session.get(

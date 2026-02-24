@@ -8,6 +8,7 @@ from asyncssh.misc import ChannelOpenError
 
 from drova_desktop_keenetic.common.after_disconnect import AfterDisconnect
 from drova_desktop_keenetic.common.before_connect import BeforeConnect
+from drova_desktop_keenetic.common.commands import DuplicateAuthCode
 from drova_desktop_keenetic.common.contants import (
     WINDOWS_HOST,
     WINDOWS_LOGIN,
@@ -70,6 +71,8 @@ class DrovaPoll:
 
             except (ChannelOpenError, OSError):
                 logger.debug("poll: ssh unreachable")
+            except DuplicateAuthCode:
+                logger.warning("poll: duplicate server registrations — waiting for cleanup on next diagnostic")
             except:
                 logger.exception("poll: unexpected error")
 

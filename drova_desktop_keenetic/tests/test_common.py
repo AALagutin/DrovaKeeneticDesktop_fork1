@@ -48,3 +48,31 @@ HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\8ff8ea03-5b09-4fad-a132-888888888
     )
     assert server_id == "8ff8ea03-5b09-4fad-a132-888888888888"
     assert auth_token == "07c43183-61b2-4e18-91cd-888888888888"
+
+
+def test_parse_all_auth_codes() -> None:
+    # Empty — no entries
+    assert RegQueryEsme.parseAllAuthCodes(b"") == []
+
+    # Single entry
+    pairs = RegQueryEsme.parseAllAuthCodes(
+        r"""
+HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\aaaa0001-0000-0000-0000-000000000000
+    auth_token    REG_SZ    bbbb0001-0000-0000-0000-000000000000
+""".encode("windows-1251")
+    )
+    assert pairs == [("aaaa0001-0000-0000-0000-000000000000", "bbbb0001-0000-0000-0000-000000000000")]
+
+    # Two servers — each paired correctly
+    pairs = RegQueryEsme.parseAllAuthCodes(
+        r"""
+HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\aaaa0001-0000-0000-0000-000000000000
+    auth_token    REG_SZ    bbbb0001-0000-0000-0000-000000000000
+
+HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\aaaa0002-0000-0000-0000-000000000000
+    auth_token    REG_SZ    bbbb0002-0000-0000-0000-000000000000
+""".encode("windows-1251")
+    )
+    assert len(pairs) == 2
+    assert pairs[0] == ("aaaa0001-0000-0000-0000-000000000000", "bbbb0001-0000-0000-0000-000000000000")
+    assert pairs[1] == ("aaaa0002-0000-0000-0000-000000000000", "bbbb0002-0000-0000-0000-000000000000")

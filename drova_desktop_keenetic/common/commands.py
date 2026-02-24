@@ -136,6 +136,20 @@ class RegQueryEsme(ICommandBuilder):
         return " ".join(("reg", "query", r"HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers", "/s", "/f", "auth_token"))
 
     @staticmethod
+    def parseAllAuthCodes(stdout: bytes) -> list[tuple[str, str]]:
+        """Parse all (server_id, auth_token) pairs from registry output.
+
+        Correctly pairs each server_id with its own auth_token even when
+        multiple server registrations are present.
+        """
+        text = stdout.decode("windows-1251")
+        r_pair = re.compile(
+            r"servers\\(?P<server_id>\S+)\s+auth_token\s+REG_SZ\s+(?P<auth_token>\S+)",
+            re.MULTILINE,
+        )
+        return [(m.group("server_id"), m.group("auth_token")) for m in r_pair.finditer(text)]
+
+    @staticmethod
     def parseAuthCode(stdout: bytes) -> tuple[str, str]:
         r_auth_token = re.compile(r"auth_token\s+REG_SZ\s+(?P<auth_token>\S+)", re.MULTILINE)
 
@@ -153,6 +167,14 @@ class RegQueryEsme(ICommandBuilder):
             raise NotFoundAuthCode()
 
         return matches_server_id["server_id"], matches_auth_token[0]
+
+
+@dataclass
+class RegDeleteKey(ICommandBuilder):
+    reg_path: str
+
+    def _build_command(self) -> str:
+        return f"reg delete {quote(self.reg_path)} /f"
 
 
 @dataclass

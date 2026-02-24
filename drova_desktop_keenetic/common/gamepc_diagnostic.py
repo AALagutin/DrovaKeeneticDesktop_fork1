@@ -4,9 +4,9 @@ from asyncio import sleep
 
 from asyncssh import SSHClientConnection
 
-from drova_desktop_keenetic.common.commands import RegQuery, ShadowDefenderCLI, TaskKill
+from drova_desktop_keenetic.common.commands import RegDeleteKey, RegQuery, ShadowDefenderCLI, TaskKill
 from drova_desktop_keenetic.common.contants import SHADOW_DEFENDER_DRIVES, SHADOW_DEFENDER_PASSWORD
-from drova_desktop_keenetic.common.drova import StatusEnum, get_latest_session
+from drova_desktop_keenetic.common.drova import StatusEnum, check_credentials, get_latest_session
 from drova_desktop_keenetic.common.helpers import BaseDrovaMerchantWindows, RebootRequired
 from drova_desktop_keenetic.common.patch import ALL_PATCHES, PatchWindowsSettings, RegistryPatch
 
@@ -28,6 +28,44 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
         self.host = host
         # host встроен в имя логгера — не нужен префикс в каждом сообщении
         self.logger = logger.getChild(host)
+
+    # ------------------------------------------------------------------
+    # Registry cleanup
+    # ------------------------------------------------------------------
+
+    async def _cleanup_stale_registrations(self) -> None:
+        """Remove invalid server registrations from registry.
+
+        Queries all (server_id, auth_token) pairs, verifies each via Drova API,
+        and deletes entries that return a non-200 response.
+        """
+        from drova_desktop_keenetic.common.commands import RegQueryEsme
+
+        result = await self.client.run(str(RegQueryEsme()))
+        if result.exit_status or result.returncode:
+            return
+
+        stdout = result.stdout.encode() if isinstance(result.stdout, str) else (result.stdout or b"")
+        all_pairs = RegQueryEsme.parseAllAuthCodes(stdout)
+
+        if len(all_pairs) <= 1:
+            return
+
+        self.logger.warning("cleanup: %d server registrations found, verifying each", len(all_pairs))
+
+        for server_id, auth_token in all_pairs:
+            try:
+                valid = await check_credentials(server_id, auth_token)
+            except Exception:
+                self.logger.warning("cleanup: %s... — network error, skipping", server_id[:8])
+                continue
+
+            if valid:
+                self.logger.info("cleanup: %s... — valid, keeping", server_id[:8])
+            else:
+                reg_path = rf"HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\{server_id}"
+                self.logger.warning("cleanup: %s... — invalid, deleting", server_id[:8])
+                await self.client.run(str(RegDeleteKey(reg_path=reg_path)))
 
     # ------------------------------------------------------------------
     # Session check
@@ -162,6 +200,7 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
     async def run(self) -> None:
         self.logger.info("diagnostic: start")
         try:
+            await self._cleanup_stale_registrations()
             if await self._has_active_sessions():
                 return
 
