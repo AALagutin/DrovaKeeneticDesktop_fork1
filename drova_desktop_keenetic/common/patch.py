@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from drova_desktop_keenetic.common.commands import (
     PsExec,
+    QWinSta,
     RegAdd,
     RegValueType,
 )
@@ -257,7 +258,15 @@ class PatchWindowsSettings(IPatch):
 
         await self.client.run("gpupdate /target:user /force", check=True)
         await sleep(1)
-        await self.client.run(str(PsExec(command="explorer.exe")), check=False)
+
+        session_id = 1  # fallback
+        qwinsta_result = await self.client.run(str(QWinSta()), check=False)
+        if qwinsta_result.exit_status == 0 and qwinsta_result.stdout:
+            detected = QWinSta.parse_active_session_id(qwinsta_result.stdout)
+            if detected is not None:
+                session_id = detected
+        logger.debug("starting explorer.exe in session %d", session_id)
+        await self.client.run(str(PsExec(command="explorer.exe", interactive=session_id)), check=False)
 
 
 ALL_PATCHES = (EpicGamesAuthDiscard, SteamAuthDiscard, UbisoftAuthDiscard, WargamingAuthDiscard, PatchWindowsSettings)

@@ -174,6 +174,21 @@ class RegQueryEsme(ICommandBuilder):
 
 
 @dataclass
+class QWinSta(ICommandBuilder):
+    def _build_command(self) -> str:
+        return "qwinsta"
+
+    @staticmethod
+    def parse_active_session_id(stdout: bytes) -> int | None:
+        text = stdout.decode("windows-1251", errors="replace")
+        # qwinsta output: "rdp-tcp#0  username  2  Active ..."
+        match = re.search(r"\s+(\d+)\s+Active", text, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return None
+
+
+@dataclass
 class RegDeleteKey(ICommandBuilder):
     reg_path: str
 
