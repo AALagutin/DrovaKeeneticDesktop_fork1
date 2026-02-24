@@ -229,23 +229,31 @@ class PatchWindowsSettings(IPatch):
             *self.disable_application(),
         )
 
+    async def _apply_reg_patch(self, patch: RegistryPatch) -> None:
+        await self.client.run(str(RegAdd(patch.reg_directory)), check=True)
+        await self.client.run(
+            str(
+                RegAdd(patch.reg_directory, value_name=patch.value_name, value_type=patch.value_type, value=patch.value)
+            ),
+            check=True,
+        )
+        return None
+
     async def _patch(self, _: Path) -> None:
         return None
 
     async def patch(self) -> None:
-        # Every conn.run() opens a new SSH channel.  Instead of opening one
-        # channel per reg-add step (N patches × 2 = 2N channels), concatenate
-        # all commands with ";" and run them in a single channel.
-        # Individual failures are non-fatal (check=False): reg add /f on HKCU
-        # paths should always succeed, and any failure will be caught by the
-        # surrounding _apply_restrictions() verification step.
-        steps: list[str] = []
+        # Run patches sequentially to stay within the SSH server's MaxSessions
+        # limit.  Parallel create_task() previously opened 20+ channels at once,
+        # causing ChannelOpenError on most of them and leaving tasks' exceptions
+        # silently unretrieved.
         for p in self._get_patches():
-            steps.append(str(RegAdd(p.reg_directory)))
-            steps.append(
-                str(RegAdd(p.reg_directory, value_name=p.value_name, value_type=p.value_type, value=p.value))
-            )
-        await self.client.run("; ".join(steps), check=False)
+            try:
+                await self._apply_reg_patch(p)
+            except Exception:
+                logger.warning(
+                    "reg patch failed: %s\\%s", p.reg_directory, p.value_name, exc_info=True
+                )
 
         await self.client.run("gpupdate /target:user /force", check=True)
         await sleep(1)
