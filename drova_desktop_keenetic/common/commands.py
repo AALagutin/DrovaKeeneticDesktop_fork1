@@ -179,10 +179,14 @@ class QWinSta(ICommandBuilder):
         return "qwinsta"
 
     @staticmethod
-    def parse_active_session_id(stdout: bytes) -> int | None:
-        text = stdout.decode("windows-1251", errors="replace")
+    def parse_active_session_id(stdout: bytes | str) -> int | None:
+        if isinstance(stdout, bytes):
+            text = stdout.decode("windows-1251", errors="replace")
+        else:
+            text = stdout
         # qwinsta output: "rdp-tcp#0  username  2  Active ..."
-        match = re.search(r"\s+(\d+)\s+Active", text, re.IGNORECASE)
+        # Russian Windows uses "Активный" instead of "Active"
+        match = re.search(r"\s+(\d+)\s+(?:Active|Активный)\b", text, re.IGNORECASE)
         if match:
             return int(match.group(1))
         return None

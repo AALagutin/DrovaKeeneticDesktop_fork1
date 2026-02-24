@@ -261,10 +261,12 @@ class PatchWindowsSettings(IPatch):
 
         session_id = 1  # fallback
         qwinsta_result = await self.client.run(str(QWinSta()), check=False)
-        if qwinsta_result.exit_status == 0 and qwinsta_result.stdout:
-            detected = QWinSta.parse_active_session_id(qwinsta_result.stdout)
-            if detected is not None:
-                session_id = detected
+        if not (qwinsta_result.exit_status or getattr(qwinsta_result, "returncode", None)):
+            stdout = qwinsta_result.stdout
+            if stdout:
+                detected = QWinSta.parse_active_session_id(stdout)
+                if detected is not None:
+                    session_id = detected
         logger.debug("starting explorer.exe in session %d", session_id)
         await self.client.run(str(PsExec(command="explorer.exe", interactive=session_id)), check=False)
 
