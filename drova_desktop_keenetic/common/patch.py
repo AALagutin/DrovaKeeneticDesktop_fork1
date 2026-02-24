@@ -268,7 +268,7 @@ class PatchWindowsSettings(IPatch):
                 if detected is not None:
                     session_id = detected
         self.logger.info("starting explorer.exe in session %d", session_id)
-        psexec_cmd = str(PsExec(command="explorer.exe", interactive=session_id))
+        psexec_cmd = str(PsExec(command="explorer.exe", interactive=session_id, user="", password=""))
         psexec_result = await self.client.run(psexec_cmd, check=False)
         self.logger.info("psexec exit_status=%r stderr=%r", psexec_result.exit_status, psexec_result.stderr)
 
