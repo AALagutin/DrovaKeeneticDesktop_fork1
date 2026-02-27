@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from abc import ABC, abstractmethod
 from configparser import ConfigParser
 from pathlib import Path, PureWindowsPath
@@ -17,7 +16,6 @@ from drova_desktop_keenetic.common.commands import (
     RegValueType,
     TaskKill,
 )
-from drova_desktop_keenetic.common.contants import OBS_AHK_SCRIPT
 
 logger = logging.getLogger(__name__)
 
@@ -312,19 +310,6 @@ class PatchWindowsSettings(IPatch):
         psexec_cmd = str(PsExec(command="explorer.exe", interactive=session_id, user="", password=""))
         psexec_result = await self.client.run(psexec_cmd, check=False)
         self.logger.info("psexec exit_status=%r stderr=%r", psexec_result.exit_status, psexec_result.stderr)
-
-        # Launch OBS via compiled AHK script if configured.
-        # The script is expected to start OBS with the correct recording profile.
-        # Waits 15s for explorer to fully load before launching.
-        obs_script = os.environ.get(OBS_AHK_SCRIPT)
-        if obs_script:
-            await asyncio.sleep(15)
-            self.logger.info("launching OBS AHK script: %s", obs_script)
-            obs_result = await self.client.run(
-                str(PsExec(command=obs_script, interactive=session_id, user="", password="")),
-                check=False,
-            )
-            self.logger.info("OBS launch exit_status=%r stderr=%r", obs_result.exit_status, obs_result.stderr)
 
 
 ALL_PATCHES = (
