@@ -4,9 +4,30 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 
+from asyncssh import connect as connect_ssh
+from asyncssh.misc import ChannelOpenError
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class HostDiag:
+    """Cached results from the periodic background SSH probe (read-only checks)."""
+
+    # True = SSH reachable with current credentials; False = unreachable/wrong password; None = not checked yet
+    ssh_ok: bool | None = None
+    # True = at least one drive is in Shadow Defender shadow mode; False = no drives protected; None = not checked
+    shadow_mode: bool | None = None
+    # True = all PatchWindowsSettings registry keys are present; False = some missing; None = not checked
+    restrictions_ok: bool | None = None
+    # None = not checked; "idle" = no active Drova session; "desktop" = active desktop session;
+    # "non_desktop" = active but non-desktop session
+    session_state: str | None = None
+    # time.time() timestamp of the last completed probe, or None if never probed
+    last_checked: float | None = None
 
 
 @dataclass
@@ -16,6 +37,7 @@ class HostEntry:
     password: str | None
     enabled: bool = True
     process: asyncio.subprocess.Process | None = field(default=None, compare=False)
+    diag: HostDiag = field(default_factory=HostDiag, compare=False)
 
     @property
     def running(self) -> bool:
@@ -31,6 +53,10 @@ class WorkerManager:
         self.config_path = config_path
         self.config: dict = {}
         self.hosts: dict[str, HostEntry] = {}
+
+    # ------------------------------------------------------------------
+    # Config
+    # ------------------------------------------------------------------
 
     def load_config(self) -> None:
         with open(self.config_path) as f:
@@ -97,6 +123,10 @@ class WorkerManager:
                 pass
             raise
 
+    # ------------------------------------------------------------------
+    # Worker lifecycle
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _worker_cmd() -> list[str]:
         return [
@@ -110,6 +140,7 @@ class WorkerManager:
             if entry.enabled:
                 await self.start_worker(host)
         asyncio.create_task(self._monitor_loop(), name="worker-monitor")
+        asyncio.create_task(self._probe_loop(), name="host-probe")
 
     async def _monitor_loop(self) -> None:
         """Periodically check for crashed workers and restart them."""
@@ -180,6 +211,162 @@ class WorkerManager:
         del self.hosts[host]
         self.save_config()
 
+    # ------------------------------------------------------------------
+    # SSH helpers
+    # ------------------------------------------------------------------
+
+    def _ssh_connect_args(self, entry: HostEntry) -> dict:
+        defaults = self.config.get("defaults", {})
+        return dict(
+            host=entry.host,
+            username=entry.login or defaults.get("login", ""),
+            password=entry.password or defaults.get("password", ""),
+            known_hosts=None,
+            encoding="windows-1251",
+            connect_timeout=10,
+        )
+
+    # ------------------------------------------------------------------
+    # Host power control
+    # ------------------------------------------------------------------
+
+    async def reboot_host(self, host: str) -> None:
+        entry = self.hosts.get(host)
+        if entry is None:
+            raise ValueError(f"Host {host!r} not found")
+        from drova_desktop_keenetic.common.commands import WindowsShutdown
+
+        try:
+            async with connect_ssh(**self._ssh_connect_args(entry)) as conn:
+                await conn.run(str(WindowsShutdown(reboot=True)), timeout=10)
+        except (ChannelOpenError, OSError):
+            # The host likely accepted the command and terminated the connection
+            pass
+        logger.info("manager: reboot command sent to host=%s", host)
+
+    async def shutdown_host(self, host: str) -> None:
+        entry = self.hosts.get(host)
+        if entry is None:
+            raise ValueError(f"Host {host!r} not found")
+        from drova_desktop_keenetic.common.commands import WindowsShutdown
+
+        try:
+            async with connect_ssh(**self._ssh_connect_args(entry)) as conn:
+                await conn.run(str(WindowsShutdown(reboot=False)), timeout=10)
+        except (ChannelOpenError, OSError):
+            pass
+        logger.info("manager: shutdown command sent to host=%s", host)
+
+    # ------------------------------------------------------------------
+    # Background host probe
+    # ------------------------------------------------------------------
+
+    async def _probe_shadow_mode(self, conn) -> bool | None:
+        sd_password = os.environ.get("SHADOW_DEFENDER_PASSWORD", "")
+        if not sd_password:
+            return None
+        from drova_desktop_keenetic.common.commands import ShadowDefenderCLI
+
+        result = await conn.run(
+            str(ShadowDefenderCLI(password=sd_password, actions=["list"])),
+            timeout=10,
+        )
+        lines = (result.stdout or "").splitlines()
+        protected = [l for l in lines if "Protected" in l and "Not protected" not in l]
+        return len(protected) > 0
+
+    async def _probe_restrictions(self, conn) -> bool | None:
+        from drova_desktop_keenetic.common.commands import RegQuery
+        from drova_desktop_keenetic.common.patch import PatchWindowsSettings
+
+        patches = list(PatchWindowsSettings(None, None)._get_patches())  # type: ignore[arg-type]
+        sem = asyncio.Semaphore(5)
+
+        async def _check_one(patch) -> bool:
+            async with sem:
+                result = await conn.run(
+                    str(RegQuery(patch.reg_directory, patch.value_name)), timeout=5
+                )
+                return result.exit_status == 0 and RegQuery.parse_value(result.stdout) is not None
+
+        results = await asyncio.gather(*[_check_one(p) for p in patches], return_exceptions=True)
+        ok = sum(1 for r in results if r is True)
+        return ok == len(patches)
+
+    async def _probe_session(self, conn) -> str | None:
+        from drova_desktop_keenetic.common.drova import StatusEnum, get_latest_session
+        from drova_desktop_keenetic.common.helpers import BaseDrovaMerchantWindows, RebootRequired
+
+        try:
+            checker = BaseDrovaMerchantWindows(conn)
+            server_id = await checker.get_server_id()
+            auth_token = await checker.get_auth_token()
+            session = await get_latest_session(server_id, auth_token)
+            if not session:
+                return "idle"
+            if session.status in (StatusEnum.NEW, StatusEnum.HANDSHAKE, StatusEnum.ACTIVE):
+                is_desktop = await checker.check_desktop_session(session)
+                return "desktop" if is_desktop else "non_desktop"
+            return "idle"
+        except RebootRequired:
+            return None
+
+    async def _probe_host_once(self, entry: HostEntry) -> None:
+        diag = entry.diag
+        try:
+            async with connect_ssh(**self._ssh_connect_args(entry)) as conn:
+                diag.ssh_ok = True
+                try:
+                    diag.shadow_mode = await self._probe_shadow_mode(conn)
+                except Exception:
+                    logger.debug("probe: shadow_mode check failed for %s", entry.host, exc_info=True)
+                    diag.shadow_mode = None
+                try:
+                    diag.restrictions_ok = await self._probe_restrictions(conn)
+                except Exception:
+                    logger.debug("probe: restrictions check failed for %s", entry.host, exc_info=True)
+                    diag.restrictions_ok = None
+                try:
+                    diag.session_state = await self._probe_session(conn)
+                except Exception:
+                    logger.debug("probe: session check failed for %s", entry.host, exc_info=True)
+                    diag.session_state = None
+        except (ChannelOpenError, OSError):
+            diag.ssh_ok = False
+            diag.shadow_mode = None
+            diag.restrictions_ok = None
+            diag.session_state = None
+        except Exception:
+            # asyncssh.PermissionDenied and other auth errors
+            diag.ssh_ok = False
+            diag.shadow_mode = None
+            diag.restrictions_ok = None
+            diag.session_state = None
+            logger.debug("probe: connection error for %s", entry.host, exc_info=True)
+        finally:
+            diag.last_checked = time.time()
+
+    async def _safe_probe(self, entry: HostEntry) -> None:
+        try:
+            await asyncio.wait_for(self._probe_host_once(entry), timeout=90)
+        except asyncio.TimeoutError:
+            logger.warning("probe: timed out for %s", entry.host)
+        except Exception:
+            logger.exception("probe: unexpected error for %s", entry.host)
+
+    async def _probe_loop(self) -> None:
+        """Background loop: probe all hosts every 30 s (first run after 15 s startup delay)."""
+        await asyncio.sleep(15)
+        while True:
+            entries = list(self.hosts.values())
+            if entries:
+                await asyncio.gather(*[self._safe_probe(e) for e in entries], return_exceptions=True)
+            await asyncio.sleep(30)
+
+    # ------------------------------------------------------------------
+    # Status
+    # ------------------------------------------------------------------
+
     def get_status(self) -> list[dict]:
         result = []
         for entry in self.hosts.values():
@@ -191,6 +378,7 @@ class WorkerManager:
                 status = "stopped"
             else:
                 status = "disabled"
+            d = entry.diag
             result.append(
                 {
                     "host": entry.host,
@@ -199,6 +387,13 @@ class WorkerManager:
                     "status": status,
                     "pid": entry.process.pid if entry.process else None,
                     "exit_code": entry.exit_code,
+                    "diag": {
+                        "ssh_ok": d.ssh_ok,
+                        "shadow_mode": d.shadow_mode,
+                        "restrictions_ok": d.restrictions_ok,
+                        "session_state": d.session_state,
+                        "last_checked": d.last_checked,
+                    },
                 }
             )
         return result

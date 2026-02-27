@@ -338,6 +338,33 @@ class TestGetStatus:
         statuses = manager.get_status()
         assert len(statuses) == 3
 
+    def test_diag_field_present_and_all_none_by_default(self, manager):
+        """Every status entry must have a 'diag' key with all fields defaulting to None."""
+        for item in manager.get_status():
+            assert "diag" in item
+            diag = item["diag"]
+            assert diag["ssh_ok"] is None
+            assert diag["shadow_mode"] is None
+            assert diag["restrictions_ok"] is None
+            assert diag["session_state"] is None
+            assert diag["last_checked"] is None
+
+    def test_diag_field_reflects_probe_results(self, manager):
+        entry = manager.hosts["10.0.0.1"]
+        entry.diag.ssh_ok = True
+        entry.diag.shadow_mode = False
+        entry.diag.restrictions_ok = False
+        entry.diag.session_state = "idle"
+        entry.diag.last_checked = 1234567890.0
+
+        item = next(s for s in manager.get_status() if s["host"] == "10.0.0.1")
+        diag = item["diag"]
+        assert diag["ssh_ok"] is True
+        assert diag["shadow_mode"] is False
+        assert diag["restrictions_ok"] is False
+        assert diag["session_state"] == "idle"
+        assert diag["last_checked"] == 1234567890.0
+
 
 # ---------------------------------------------------------------------------
 # start_all

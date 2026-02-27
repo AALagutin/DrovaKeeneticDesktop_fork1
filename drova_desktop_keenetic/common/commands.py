@@ -221,6 +221,15 @@ class RegQuery(ICommandBuilder):
         return None
 
 
+@dataclass
+class WindowsShutdown(ICommandBuilder):
+    reboot: bool = False
+
+    def _build_command(self) -> str:
+        action = "/r" if self.reboot else "/s"
+        return f"shutdown.exe {action} /t 0 /f"
+
+
 class RegValueType(StrEnum):
     REG_SZ = "REG_SZ"
     REG_MULTI_SZ = "REG_MULTI_SZ"

@@ -40,6 +40,8 @@ def make_mock_manager() -> MagicMock:
     manager.stop_worker = AsyncMock()
     manager.add_host = AsyncMock()
     manager.remove_host = AsyncMock()
+    manager.reboot_host = AsyncMock()
+    manager.shutdown_host = AsyncMock()
     return manager
 
 
@@ -273,3 +275,134 @@ class TestDeleteHost:
         resp = await client.delete("/api/hosts/10.0.0.1", headers=auth())
         data = await resp.json()
         assert data == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# POST /api/hosts/{host}/reboot
+# ---------------------------------------------------------------------------
+
+
+class TestRebootHost:
+    @pytest.mark.asyncio
+    async def test_calls_reboot_host(self, client):
+        manager = client._mock_manager
+        resp = await client.post("/api/hosts/10.0.0.1/reboot", headers=auth())
+        assert resp.status == 200
+        manager.reboot_host.assert_called_once_with("10.0.0.1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_host_returns_404(self, client):
+        manager = client._mock_manager
+        manager.reboot_host.side_effect = ValueError("not found")
+        resp = await client.post("/api/hosts/9.9.9.9/reboot", headers=auth())
+        assert resp.status == 404
+        data = await resp.json()
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_returns_ok_true(self, client):
+        resp = await client.post("/api/hosts/10.0.0.1/reboot", headers=auth())
+        data = await resp.json()
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, client):
+        resp = await client.post("/api/hosts/10.0.0.1/reboot")
+        assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# POST /api/hosts/{host}/shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownHost:
+    @pytest.mark.asyncio
+    async def test_calls_shutdown_host(self, client):
+        manager = client._mock_manager
+        resp = await client.post("/api/hosts/10.0.0.1/shutdown", headers=auth())
+        assert resp.status == 200
+        manager.shutdown_host.assert_called_once_with("10.0.0.1")
+
+    @pytest.mark.asyncio
+    async def test_unknown_host_returns_404(self, client):
+        manager = client._mock_manager
+        manager.shutdown_host.side_effect = ValueError("not found")
+        resp = await client.post("/api/hosts/9.9.9.9/shutdown", headers=auth())
+        assert resp.status == 404
+        data = await resp.json()
+        assert "error" in data
+
+    @pytest.mark.asyncio
+    async def test_returns_ok_true(self, client):
+        resp = await client.post("/api/hosts/10.0.0.1/shutdown", headers=auth())
+        data = await resp.json()
+        assert data == {"ok": True}
+
+    @pytest.mark.asyncio
+    async def test_requires_auth(self, client):
+        resp = await client.post("/api/hosts/10.0.0.1/shutdown")
+        assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# GET /api/hosts — diag field in response
+# ---------------------------------------------------------------------------
+
+
+class TestGetHostsDiag:
+    @pytest.mark.asyncio
+    async def test_diag_field_present(self, client):
+        manager = client._mock_manager
+        manager.get_status.return_value = [
+            {
+                "host": "10.0.0.1",
+                "enabled": True,
+                "running": True,
+                "status": "running",
+                "pid": 1234,
+                "exit_code": None,
+                "diag": {
+                    "ssh_ok": True,
+                    "shadow_mode": False,
+                    "restrictions_ok": False,
+                    "session_state": "idle",
+                    "last_checked": 1700000000.0,
+                },
+            }
+        ]
+        resp = await client.get("/api/hosts", headers=auth())
+        data = await resp.json()
+        assert len(data) == 1
+        diag = data[0]["diag"]
+        assert diag["ssh_ok"] is True
+        assert diag["shadow_mode"] is False
+        assert diag["session_state"] == "idle"
+        assert diag["last_checked"] == 1700000000.0
+
+    @pytest.mark.asyncio
+    async def test_diag_unknown_state(self, client):
+        """All-None diag (not yet probed) must be returned as-is."""
+        manager = client._mock_manager
+        manager.get_status.return_value = [
+            {
+                "host": "10.0.0.1",
+                "enabled": True,
+                "running": True,
+                "status": "running",
+                "pid": 1234,
+                "exit_code": None,
+                "diag": {
+                    "ssh_ok": None,
+                    "shadow_mode": None,
+                    "restrictions_ok": None,
+                    "session_state": None,
+                    "last_checked": None,
+                },
+            }
+        ]
+        resp = await client.get("/api/hosts", headers=auth())
+        data = await resp.json()
+        diag = data[0]["diag"]
+        assert diag["ssh_ok"] is None
+        assert diag["last_checked"] is None

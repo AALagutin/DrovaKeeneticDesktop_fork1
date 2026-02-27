@@ -112,3 +112,24 @@ HKEY_LOCAL_MACHINE\SOFTWARE\ITKey\Esme\servers\aaaa0002-0000-0000-0000-000000000
     assert len(pairs) == 2
     assert pairs[0] == ("aaaa0001-0000-0000-0000-000000000000", "bbbb0001-0000-0000-0000-000000000000")
     assert pairs[1] == ("aaaa0002-0000-0000-0000-000000000000", "bbbb0002-0000-0000-0000-000000000000")
+
+
+# ---------------------------------------------------------------------------
+# WindowsShutdown
+# ---------------------------------------------------------------------------
+
+
+def test_windows_shutdown_shutdown():
+    from drova_desktop_keenetic.common.commands import WindowsShutdown
+    cmd = str(WindowsShutdown(reboot=False))
+    assert "/s" in cmd
+    assert "/r" not in cmd
+    assert "/f" in cmd
+
+
+def test_windows_shutdown_reboot():
+    from drova_desktop_keenetic.common.commands import WindowsShutdown
+    cmd = str(WindowsShutdown(reboot=True))
+    assert "/r" in cmd
+    assert "/s" not in cmd
+    assert "/f" in cmd
