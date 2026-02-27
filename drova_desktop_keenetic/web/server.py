@@ -58,6 +58,7 @@ _HTML = """\
     .di-sess-idle    { background: #f3f4f6; color: #9ca3af; }
     .di-sess-desk    { background: #dbeafe; color: #1d4ed8; }
     .di-sess-other   { background: #fef3c7; color: #b45309; }
+    .di-info         { background: #e0f2fe; color: #0369a1; }
 
     /* Buttons */
     .btn { padding: .28rem .6rem; border: none; border-radius: 6px; cursor: pointer;
@@ -103,14 +104,15 @@ _HTML = """\
             <th>Воркер</th>
             <th title="SSH: доступность и корректность пароля">SSH</th>
             <th title="Shadow Defender: теневой режим">SD</th>
-            <th title="Ограничения реестра применены">Огр.</th>
+            <th title="Ограничения реестра применены (зонд)">Огр.</th>
             <th title="Текущий Drova-сеанс">Сессия</th>
+            <th title="Результат стартовой диагностики (GamePCDiagnostic)">Диагн.↑</th>
             <th>PID</th>
             <th>Действия</th>
           </tr>
         </thead>
         <tbody id="hosts-body">
-          <tr><td colspan="8" class="empty">Загрузка...</td></tr>
+          <tr><td colspan="9" class="empty">Загрузка...</td></tr>
         </tbody>
       </table>
     </div>
@@ -124,6 +126,7 @@ _HTML = """\
       <span class="legend-item"><span class="di di-sess-desk">🖥</span> сеанс: рабочий стол</span>
       <span class="legend-item"><span class="di di-sess-other">▷</span> сеанс: не рабочий стол</span>
       <span class="legend-item"><span class="di di-sess-idle">○</span> нет сеанса</span>
+      <span class="legend-item"><b>Диагн.↑</b> — стартовая диагностика (GamePCDiagnostic): применение и верификация ограничений</span>
     </div>
     <div class="updated" id="updated"></div>
   </div>
@@ -207,6 +210,40 @@ function fmtChecked(ts) {
   return new Date(ts * 1000).toLocaleTimeString();
 }
 
+function startupDiagCell(wd) {
+  if (!wd || wd.timestamp === null || wd.timestamp === undefined) {
+    return '<span class="di di-unk" title="Диагностика ещё не запускалась в этой сессии">—</span>';
+  }
+
+  const ts = new Date(wd.timestamp * 1000).toLocaleString();
+
+  if (wd.skipped) {
+    return `<span class="di di-info" title="Пропущена: обнаружена активная сессия\n${ts}">⊙</span>`;
+  }
+
+  if (wd.aborted) {
+    return `<span class="di di-err" title="Прервана: ошибка или хост требует перезагрузки\n${ts}">⚡</span>`;
+  }
+
+  const ok = wd.restrictions_ok ?? 0;
+  const total = wd.restrictions_total ?? 0;
+  const pf = wd.patch_failures || [];
+  const missing = wd.restrictions_missing || [];
+
+  let lines = [`${ok}/${total} ограничений`, ts];
+  if (pf.length > 0) lines.push('Патчи: ' + pf.join(', '));
+  if (missing.length > 0) {
+    const shown = missing.slice(0, 5).map(k => k.split('\\').pop());
+    lines.push('Отсутств.: ' + shown.join(', ') + (missing.length > 5 ? ' ...' : ''));
+  }
+  const tooltip = lines.join('\n');
+
+  const allOk = (ok === total && total > 0) && pf.length === 0;
+  const cls   = allOk ? 'di-ok' : 'di-warn';
+  const icon  = allOk ? '✓' : '⚠';
+  return `<span class="di ${cls}" style="width:auto;padding:0 .35rem;font-size:.7rem;" title="${tooltip}">${icon} ${ok}/${total}</span>`;
+}
+
 // ---- Refresh ----
 
 async function refresh() {
@@ -214,7 +251,7 @@ async function refresh() {
   const hosts = await r.json();
   const tbody = document.getElementById('hosts-body');
   if (!hosts.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">Нет хостов. Добавьте первый ниже.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">Нет хостов. Добавьте первый ниже.</td></tr>';
   } else {
     tbody.innerHTML = hosts.map(h => {
       const label = STATUS_LABELS[h.status] || h.status;
@@ -234,6 +271,7 @@ async function refresh() {
         <td>${sdIcon(d.shadow_mode)}</td>
         <td>${restIcon(d.restrictions_ok, d.shadow_mode)}</td>
         <td title="Проверено: ${checked}">${sessIcon(d.session_state)}</td>
+        <td>${startupDiagCell(h.worker_diag)}</td>
         <td>${pid}</td>
         <td class="actions">
           ${actionBtn}

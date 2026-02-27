@@ -133,3 +133,69 @@ def test_windows_shutdown_reboot():
     assert "/r" in cmd
     assert "/s" not in cmd
     assert "/f" in cmd
+
+
+# ---------------------------------------------------------------------------
+# GamePCDiagnostic._write_status
+# ---------------------------------------------------------------------------
+
+
+def test_write_status_writes_json(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    from drova_desktop_keenetic.common.gamepc_diagnostic import GamePCDiagnostic
+    from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE
+
+    status_file = str(tmp_path / "status.json")
+    monkeypatch.setenv(DROVA_STATUS_FILE, status_file)
+
+    diag = GamePCDiagnostic.__new__(GamePCDiagnostic)
+    diag.logger = MagicMock()
+
+    diag._write_status(
+        skipped=False,
+        aborted=False,
+        patch_failures=["steam"],
+        verification={r"HKCU\key1": True, r"HKCU\key2": False},
+    )
+
+    data = json.loads(open(status_file).read())
+    assert data["skipped"] is False
+    assert data["aborted"] is False
+    assert data["patch_failures"] == ["steam"]
+    assert data["restrictions_ok"] == 1
+    assert data["restrictions_total"] == 2
+    assert r"HKCU\key2" in data["restrictions_missing"]
+    assert isinstance(data["timestamp"], float)
+
+
+def test_write_status_noop_when_env_not_set(monkeypatch):
+    from unittest.mock import MagicMock
+    from drova_desktop_keenetic.common.gamepc_diagnostic import GamePCDiagnostic
+    from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE
+
+    monkeypatch.delenv(DROVA_STATUS_FILE, raising=False)
+
+    diag = GamePCDiagnostic.__new__(GamePCDiagnostic)
+    diag.logger = MagicMock()
+    # Must not raise
+    diag._write_status(skipped=True)
+
+
+def test_write_status_skipped(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+    from drova_desktop_keenetic.common.gamepc_diagnostic import GamePCDiagnostic
+    from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE
+
+    status_file = str(tmp_path / "status.json")
+    monkeypatch.setenv(DROVA_STATUS_FILE, status_file)
+
+    diag = GamePCDiagnostic.__new__(GamePCDiagnostic)
+    diag.logger = MagicMock()
+    diag._write_status(skipped=True)
+
+    data = json.loads(open(status_file).read())
+    assert data["skipped"] is True
+    assert data["restrictions_ok"] == 0
+    assert data["patch_failures"] == []

@@ -1,11 +1,13 @@
+import json
 import logging
 import os
+import time
 from asyncio import sleep
 
 from asyncssh import SSHClientConnection
 
 from drova_desktop_keenetic.common.commands import RegDeleteKey, RegQuery, ShadowDefenderCLI, TaskKill
-from drova_desktop_keenetic.common.contants import SHADOW_DEFENDER_DRIVES, SHADOW_DEFENDER_PASSWORD
+from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE, SHADOW_DEFENDER_DRIVES, SHADOW_DEFENDER_PASSWORD
 from drova_desktop_keenetic.common.drova import StatusEnum, check_credentials, get_latest_session
 from drova_desktop_keenetic.common.helpers import BaseDrovaMerchantWindows, RebootRequired
 from drova_desktop_keenetic.common.patch import ALL_PATCHES, PatchWindowsSettings, RegistryPatch
@@ -193,15 +195,52 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
             for key in missing:
                 self.logger.warning("  missing: %s", key)
 
+    def _write_status(
+        self,
+        *,
+        skipped: bool = False,
+        aborted: bool = False,
+        patch_failures: list[str] | None = None,
+        verification: dict[str, bool] | None = None,
+    ) -> None:
+        """Persist diagnostic results to DROVA_STATUS_FILE for the web server to read."""
+        status_file = os.environ.get(DROVA_STATUS_FILE)
+        if not status_file:
+            return
+
+        verification = verification or {}
+        ok_count = sum(1 for v in verification.values() if v)
+        missing = [k for k, v in verification.items() if not v]
+
+        data = {
+            "timestamp": time.time(),
+            "skipped": skipped,
+            "aborted": aborted,
+            "patch_failures": patch_failures or [],
+            "restrictions_ok": ok_count,
+            "restrictions_total": len(verification),
+            "restrictions_missing": missing,
+        }
+        try:
+            with open(status_file, "w") as f:
+                json.dump(data, f)
+        except Exception:
+            self.logger.warning("diagnostic: failed to write status file %s", status_file)
+
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
         self.logger.info("diagnostic: start")
+        patch_failures: list[str] = []
+        verification: dict[str, bool] = {}
+        skipped = False
+        aborted = False
         try:
             await self._cleanup_stale_registrations()
             if await self._has_active_sessions():
+                skipped = True
                 return
 
             await self._sd_enter()
@@ -218,7 +257,16 @@ class GamePCDiagnostic(BaseDrovaMerchantWindows):
 
         except RebootRequired:
             self.logger.warning("diagnostic: aborted — RebootRequired")
+            aborted = True
         except Exception:
             self.logger.exception("diagnostic: error")
+            aborted = True
+        finally:
+            self._write_status(
+                skipped=skipped,
+                aborted=aborted,
+                patch_failures=patch_failures,
+                verification=verification,
+            )
 
         self.logger.info("diagnostic: done")

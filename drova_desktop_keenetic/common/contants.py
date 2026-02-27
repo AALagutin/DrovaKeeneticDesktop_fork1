@@ -12,3 +12,7 @@ SHADOW_DEFENDER_DRIVES = "SHADOW_DEFENDER_DRIVES"
 DROVA_WEB_PORT = "DROVA_WEB_PORT"
 DROVA_WEB_USER = "DROVA_WEB_USER"
 DROVA_WEB_PASSWORD = "DROVA_WEB_PASSWORD"
+
+# Path to a JSON file where the DrovaPoll subprocess writes its startup diagnostic results.
+# Set by WorkerManager when spawning a worker so the web server can read the results.
+DROVA_STATUS_FILE = "DROVA_STATUS_FILE"

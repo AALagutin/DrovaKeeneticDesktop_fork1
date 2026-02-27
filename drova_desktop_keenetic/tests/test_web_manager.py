@@ -550,3 +550,84 @@ class TestConfigResilience:
 
         # The original file must still be readable and correct
         assert json.loads(path.read_text()) == BASE_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# _status_file_path / _load_worker_diag
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerDiag:
+    def test_status_file_path_is_deterministic(self, manager):
+        p1 = manager._status_file_path("10.0.0.1")
+        p2 = manager._status_file_path("10.0.0.1")
+        assert p1 == p2
+
+    def test_status_file_path_differs_per_host(self, manager):
+        assert manager._status_file_path("10.0.0.1") != manager._status_file_path("10.0.0.2")
+
+    def test_load_worker_diag_returns_empty_when_missing(self, manager):
+        wd = manager._load_worker_diag("host-that-does-not-exist")
+        assert wd.timestamp is None
+        assert wd.patch_failures == []
+        assert wd.restrictions_missing == []
+
+    def test_load_worker_diag_reads_file(self, manager, tmp_path, monkeypatch):
+        import tempfile
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        host = "10.0.0.1"
+        path = tmp_path / f"drova-status-{host.replace('.', '-')}.json"
+        data = {
+            "timestamp": 1700000001.0,
+            "skipped": False,
+            "aborted": False,
+            "patch_failures": ["steam"],
+            "restrictions_ok": 27,
+            "restrictions_total": 28,
+            "restrictions_missing": [r"HKCU\Software\Policies\steam"],
+        }
+        path.write_text(json.dumps(data))
+        wd = manager._load_worker_diag(host)
+        assert wd.timestamp == 1700000001.0
+        assert wd.patch_failures == ["steam"]
+        assert wd.restrictions_ok == 27
+        assert wd.restrictions_total == 28
+        assert len(wd.restrictions_missing) == 1
+
+    def test_load_worker_diag_tolerates_corrupt_json(self, manager, tmp_path, monkeypatch):
+        import tempfile
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        host = "10.0.0.2"
+        path = tmp_path / f"drova-status-{host.replace('.', '-')}.json"
+        path.write_text("NOT JSON {{{{")
+        wd = manager._load_worker_diag(host)
+        assert wd.timestamp is None
+
+    def test_get_status_includes_worker_diag_key(self, manager):
+        for item in manager.get_status():
+            assert "worker_diag" in item
+            wd = item["worker_diag"]
+            assert "timestamp" in wd
+            assert "skipped" in wd
+            assert "patch_failures" in wd
+            assert "restrictions_ok" in wd
+            assert "restrictions_total" in wd
+            assert "restrictions_missing" in wd
+
+    def test_start_worker_sets_status_file_env(self, manager, mocker, tmp_path):
+        """DROVA_STATUS_FILE must be passed to the subprocess environment."""
+        mock_proc = make_fake_process(pid=777)
+        mock_proc.returncode = None
+        create_sub = mocker.patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_proc,
+        )
+
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(manager.start_worker("10.0.0.1"))
+
+        _, kwargs = create_sub.call_args
+        env = kwargs.get("env", {})
+        from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE
+        assert DROVA_STATUS_FILE in env
+        assert env[DROVA_STATUS_FILE] == manager._status_file_path("10.0.0.1")

@@ -7,10 +7,32 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 
+from drova_desktop_keenetic.common.contants import DROVA_STATUS_FILE
+
 from asyncssh import connect as connect_ssh
 from asyncssh.misc import ChannelOpenError
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class WorkerDiag:
+    """Results of the startup diagnostic cycle written by the DrovaPoll subprocess."""
+
+    # Timestamp of the last diagnostic run (time.time()), or None if never run for this session
+    timestamp: float | None = None
+    # True = diagnostic was skipped because an active Drova session was detected
+    skipped: bool | None = None
+    # True = diagnostic was interrupted (RebootRequired or unhandled exception)
+    aborted: bool | None = None
+    # Names of patches that raised an exception during _apply_restrictions
+    patch_failures: list[str] = field(default_factory=list)
+    # Number of registry keys that passed verification
+    restrictions_ok: int | None = None
+    # Total number of registry keys checked
+    restrictions_total: int | None = None
+    # Registry keys that were missing after applying restrictions
+    restrictions_missing: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +60,7 @@ class HostEntry:
     enabled: bool = True
     process: asyncio.subprocess.Process | None = field(default=None, compare=False)
     diag: HostDiag = field(default_factory=HostDiag, compare=False)
+    worker_diag: WorkerDiag = field(default_factory=WorkerDiag, compare=False)
 
     @property
     def running(self) -> bool:
@@ -173,6 +196,8 @@ class WorkerManager:
         env["WINDOWS_PASSWORD"] = entry.password or defaults.get("password", "")
         # Remove DROVA_CONFIG so the subprocess runs in single-host mode
         env.pop("DROVA_CONFIG", None)
+        # Tell the subprocess where to write its startup diagnostic results
+        env[DROVA_STATUS_FILE] = self._status_file_path(host)
 
         process = await asyncio.create_subprocess_exec(*self._worker_cmd(), env=env)
         entry.process = process
@@ -210,6 +235,34 @@ class WorkerManager:
         await self.stop_worker(host)
         del self.hosts[host]
         self.save_config()
+
+    # ------------------------------------------------------------------
+    # Worker status file
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _status_file_path(host: str) -> str:
+        """Return the path to the JSON status file for a given host."""
+        safe = host.replace(".", "-").replace(":", "_").replace("/", "_")
+        return os.path.join(tempfile.gettempdir(), f"drova-status-{safe}.json")
+
+    def _load_worker_diag(self, host: str) -> WorkerDiag:
+        """Read and parse the status file written by the DrovaPoll subprocess."""
+        path = self._status_file_path(host)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            return WorkerDiag(
+                timestamp=data.get("timestamp"),
+                skipped=data.get("skipped"),
+                aborted=data.get("aborted"),
+                patch_failures=data.get("patch_failures") or [],
+                restrictions_ok=data.get("restrictions_ok"),
+                restrictions_total=data.get("restrictions_total"),
+                restrictions_missing=data.get("restrictions_missing") or [],
+            )
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return WorkerDiag()
 
     # ------------------------------------------------------------------
     # SSH helpers
@@ -379,6 +432,7 @@ class WorkerManager:
             else:
                 status = "disabled"
             d = entry.diag
+            wd = self._load_worker_diag(entry.host)
             result.append(
                 {
                     "host": entry.host,
@@ -393,6 +447,15 @@ class WorkerManager:
                         "restrictions_ok": d.restrictions_ok,
                         "session_state": d.session_state,
                         "last_checked": d.last_checked,
+                    },
+                    "worker_diag": {
+                        "timestamp": wd.timestamp,
+                        "skipped": wd.skipped,
+                        "aborted": wd.aborted,
+                        "patch_failures": wd.patch_failures,
+                        "restrictions_ok": wd.restrictions_ok,
+                        "restrictions_total": wd.restrictions_total,
+                        "restrictions_missing": wd.restrictions_missing,
                     },
                 }
             )
