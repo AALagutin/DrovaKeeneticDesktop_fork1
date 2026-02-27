@@ -8,6 +8,7 @@ Python-воркер (gate) на Linux управляет игровым Windows 
 **Entrypoints:**
 - `drova_poll` — polling-режим: сам мониторит Drova API, ждёт сессий
 - `drova_socket` — socket-режим: слушает порт, запускается по внешнему сигналу
+- `drova_web` — web-режим: запускает воркеры как дочерние процессы, предоставляет browser UI
 
 ## Структура файлов
 
@@ -24,6 +25,7 @@ drova_desktop_keenetic/
     after_disconnect.py  # SD exit+reboot
     gamepc_diagnostic.py # диагностика при старте: cleanup regs → SD enter →
                          # apply patches → verify registry → SD exit+reboot
+                         # → записывает результат в DROVA_STATUS_FILE (JSON)
     helpers.py           # BaseDrovaMerchantWindows, CheckDesktop,
                          # WaitFinishOrAbort, WaitNewDesktopSession, RebootRequired
     drova_poll.py        # DrovaPoll: основной polling loop
@@ -31,19 +33,32 @@ drova_desktop_keenetic/
     drova_server_binary.py  # DrovaBinaryProtocol: проксирование TCP на порт 7985
     drova.py             # Drova API: get_latest_session, get_product_info,
                          # check_credentials, StatusEnum, SessionsEntity
-    contants.py          # имена env-переменных
+    contants.py          # имена env-переменных (включая DROVA_STATUS_FILE)
+  web/
+    manager.py           # WorkerManager: запускает/следит за дочерними воркерами,
+                         # HostEntry + WorkerDiag dataclasses,
+                         # фоновый SSH-зонд (_probe_loop, HostDiag),
+                         # IPC через /tmp/drova-status-{host}.json
+    server.py            # aiohttp HTTP-сервер: таблица хостов, REST API,
+                         # Basic Auth, JS-рендеринг иконок (startupDiagCell)
   bin/
     drova_poll.py        # entrypoint: single-host (env vars) или multi-host (DROVA_CONFIG)
     drova_socket.py      # entrypoint
+    drova_web.py         # entrypoint: читает config.json, устанавливает SD env из defaults,
+                         # запускает WorkerManager + aiohttp
   tests/
     conftest.py          # фикстура test_env: подставляет все env vars
-    test_common.py       # unit: PsExec, RegQueryEsme, QWinSta, parseAllAuthCodes
+    test_common.py       # unit: PsExec, RegQueryEsme, QWinSta, parseAllAuthCodes,
+                         # GamePCDiagnostic._write_status
     test_helpers.py
     test_poll.py
     test_socket.py
+    test_web_manager.py  # WorkerManager, WorkerDiag, HostDiag, SSH-зонд
+    test_web_server.py   # HTTP endpoints, Basic Auth, REST API
 scripts/
   rollback_restrictions.ps1  # ручной откат реестровых ограничений на Windows
 AGENT_TZ.md             # ТЗ на будущего Go-агента (не реализован)
+ADMIN_GUIDE.md          # полное руководство администратора
 ```
 
 ## Env-переменные
@@ -55,10 +70,14 @@ AGENT_TZ.md             # ТЗ на будущего Go-агента (не ре�
 | `WINDOWS_PASSWORD` | SSH пароль |
 | `SHADOW_DEFENDER_PASSWORD` | пароль Shadow Defender |
 | `SHADOW_DEFENDER_DRIVES` | диски для SD, например `CDE` |
-| `DROVA_CONFIG` | путь к JSON multi-host конфигу (опционально) |
+| `DROVA_CONFIG` | путь к JSON multi-host конфигу (опционально; имя файла произвольное) |
 | `DROVA_SOCKET_LISTEN` | порт для socket-режима |
+| `DROVA_STATUS_FILE` | путь к JSON-файлу для IPC диагностики (устанавливается WorkerManager, не нужен вручную) |
+| `DROVA_WEB_PORT` | порт HTTP для drova_web (по умолч. 8080) |
+| `DROVA_WEB_USER` | логин Basic Auth (по умолч. admin) |
+| `DROVA_WEB_PASSWORD` | пароль Basic Auth |
 
-**Multi-host JSON формат** (`DROVA_CONFIG`):
+**Multi-host JSON формат** (`DROVA_CONFIG`, имя файла произвольное):
 ```json
 {
   "defaults": { "login": "user", "password": "pass",
@@ -70,10 +89,12 @@ AGENT_TZ.md             # ТЗ на будущего Go-агента (не ре�
 }
 ```
 
+> `shadow_defender_password`/`shadow_defender_drives` в секции `defaults` — это единственное место, где их нужно указать для multi-host / web режима. `drova_web.py` читает их из конфига и передаёт дочерним воркерам через `os.environ.setdefault`. В `web.env` их дублировать не нужно.
+
 ## Ключевые классы
 
 ### `PatchWindowsSettings` (patch.py)
-Выставляет ~17 реестровых ключей параллельно (Semaphore=5):
+Выставляет ~28 реестровых ключей параллельно (Semaphore=5):
 - Отключает CMD, TaskManager, VBScript, PowerShell
 - Запрещает выключение/выход через Start
 - Отключает regedit, mmc, gpedit, anydesk, rustdesk, soundpad и др. через DisallowRun
@@ -93,11 +114,23 @@ AGENT_TZ.md             # ТЗ на будущего Go-агента (не ре�
 3. `_apply_restrictions` (все патчи, логирует OK/FAILED)
 4. `_verify_all_restrictions` — RegQuery каждого ключа
 5. `_sd_exit_reboot` — откат (в finally)
+6. `_write_status()` — записывает результат в `DROVA_STATUS_FILE` (в finally, всегда):
+   - `skipped=True` если при старте найдена активная сессия
+   - `aborted=True` если исключение или RebootRequired
+   - иначе: `patch_failures`, `restrictions_ok/total/missing`
+
+### `WorkerManager` (web/manager.py)
+- `HostEntry` dataclass: статус воркера + `HostDiag` (SSH-зонд) + `WorkerDiag` (стартовая диагностика)
+- `WorkerDiag` dataclass: timestamp, skipped, aborted, patch_failures, restrictions_ok/total/missing
+- `start_worker(host)` — запускает subprocess drova_poll, передаёт `DROVA_STATUS_FILE=/tmp/drova-status-{host}.json`
+- `_probe_loop()` — фоновые SSH-зонды каждые 30s: SSH, SD режим, reg restrictions, Drova сессия
+- `_load_worker_diag(host)` — читает JSON из `/tmp/drova-status-{host}.json`, толерантен к отсутствию/битому файлу
+- `get_status()` — возвращает полный статус: `diag` (SSH-зонд) + `worker_diag` (стартовая диагностика)
 
 ### `DrovaPoll` (drova_poll.py)
 ```
 serve():
-  _run_startup_diagnostic()   # GamePCDiagnostic
+  _run_startup_diagnostic()   # GamePCDiagnostic → пишет DROVA_STATUS_FILE
   _waitif_session_desktop_exists()  # если сессия уже есть — дождаться конца
   polling():                  # бесконечный цикл
     SSH connect
@@ -124,6 +157,9 @@ serve():
 12. **fix**: PowerShell `&` оператор для CmdTool.exe
 13. **fix**: `PsExec` без `-u/-p` для explorer.exe
 14. **debug**: INFO-логи для qwinsta и psexec результатов
+15. **feat(web)**: `drova_web` — browser UI для multi-host управления (WorkerManager, aiohttp-сервер, SSH-зонд, Basic Auth)
+16. **feat(web)**: колонка «Диагн.↑» — стартовая диагностика в UI; IPC через `/tmp/drova-status-{host}.json`; `DROVA_STATUS_FILE` env var; `WorkerDiag` dataclass; `_write_status()` в `GamePCDiagnostic`
+17. **docs**: `ADMIN_GUIDE.md` — полное руководство; раздел 7.4 web UI; fix: SD params не нужны в `web.env`
 
 ## Запуск тестов
 
@@ -132,7 +168,7 @@ poetry install
 poetry run pytest drova_desktop_keenetic/tests/ -v
 ```
 
-Тесты только unit (без SSH, без Windows). Все async-тесты через `pytest-asyncio`.
+107 тестов, только unit (без SSH, без Windows). Все async-тесты через `pytest-asyncio`.
 
 ## Известные особенности / ловушки
 
@@ -142,10 +178,11 @@ poetry run pytest drova_desktop_keenetic/tests/ -v
 - **RebootRequired**: если `RegQueryEsme` не находит auth_token → нужен reboot (ESME не запустился).
 - **DuplicateAuthCode**: два server_id в реестре → `_cleanup_stale_registrations` должен был очистить при старте.
 - **`ShadowDefenderCLI` commit action**: есть `case "commit"` но `self.drives.split("")` — баг (split по пустой строке). Не используется в рабочем коде.
+- **SD params в web-режиме**: `drova_web.py` читает `shadow_defender_password`/`shadow_defender_drives` из `defaults` конфига и прокидывает через `os.environ.setdefault` — в `web.env` их дублировать не нужно.
+- **Диагностика после перезапуска**: файл `/tmp/drova-status-{host}.json` не удаляется при рестарте сервиса — UI покажет прошлую диагностику до первого прогона новой.
 
 ## Следующие возможные задачи
 
-- Тесты для `GamePCDiagnostic` (сейчас не покрыт)
 - Тесты для `BeforeConnect` / `AfterDisconnect`
 - Проверить/исправить баг в `ShadowDefenderCLI` для `commit` action
 - Интеграция с Go-агентом (см. `AGENT_TZ.md`)
