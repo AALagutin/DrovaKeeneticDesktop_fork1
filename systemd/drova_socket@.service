@@ -1,9 +1,15 @@
 [Unit]
-Description=My Drova Desktop Service
+Description=Drova Socket Service (%i)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
+User=root
 EnvironmentFile=/opt/drova-desktop/%i.env
 WorkingDirectory=/opt/drova-desktop
-ExecStart=poerty run drova_socket
+ExecStart=/opt/drova-desktop/.venv/bin/drova_socket
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

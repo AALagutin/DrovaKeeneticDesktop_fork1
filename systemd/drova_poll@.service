@@ -1,5 +1,5 @@
 [Unit]
-Description=My Drova Desktop Service
+Description=Drova Poll Service (%i)
 Wants=network-online.target
 After=network-online.target
 
@@ -7,8 +7,9 @@ After=network-online.target
 User=root
 EnvironmentFile=/opt/drova-desktop/%i.env
 WorkingDirectory=/opt/drova-desktop
-ExecStart=/root/.local/bin/poetry run drova_poll
+ExecStart=/opt/drova-desktop/.venv/bin/drova_poll
 Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
