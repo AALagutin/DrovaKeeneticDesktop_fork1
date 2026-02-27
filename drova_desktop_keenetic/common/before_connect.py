@@ -2,7 +2,7 @@ import logging
 import os
 from asyncio import sleep
 
-from asyncssh import SSHClientConnection
+from asyncssh import SSHClientConnection, SFTPNoSuchFile
 
 from drova_desktop_keenetic.common.commands import ShadowDefenderCLI, TaskKill
 from drova_desktop_keenetic.common.contants import (
@@ -41,6 +41,8 @@ class BeforeConnect:
                     await sleep(0.2)
                     try:
                         await path(self.client, sftp).patch()
+                    except SFTPNoSuchFile as e:
+                        self.logger.warning("patch %s: file not found on remote — skipped: %s", path.NAME, e)
                     except Exception:
                         self.logger.warning("patch %s: FAILED — skipped", path.NAME, exc_info=True)
 

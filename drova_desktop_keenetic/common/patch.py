@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from abc import ABC, abstractmethod
 from configparser import ConfigParser
 from pathlib import Path, PureWindowsPath
@@ -14,7 +15,9 @@ from drova_desktop_keenetic.common.commands import (
     QWinSta,
     RegAdd,
     RegValueType,
+    TaskKill,
 )
+from drova_desktop_keenetic.common.contants import OBS_AHK_SCRIPT
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +43,27 @@ class IPatch(ABC):
             await self.sftp.put(str(temp_file.name), str(self.remote_file_location))
 
 
-class EpicGamesAuthDiscard(IPatch):
-    logger = logger.getChild("EpicGamesAuthDiscard")
-    NAME = "epicgames"
+class OldEpicGamesAuthDiscard(IPatch):
+    """Clears Epic Games auth for the legacy launcher config path (pre-2021)."""
+    logger = logger.getChild("OldEpicGamesAuthDiscard")
+    NAME = "oldepicgames"
+    TASKKILL_IMAGE = "EpicGamesLauncher.exe"
+
+    remote_file_location = PureWindowsPath(r"AppData\Local\EpicGamesLauncher\Saved\Config\Windows\GameUserSettings.ini")
+
+    async def _patch(self, file: Path) -> None:
+        config = ConfigParser(strict=False)
+        config.read(file, encoding="UTF-8")
+        config.remove_section("RememberMe")
+        config.remove_section("Offline")
+        with open(file, "w") as f:
+            config.write(f)
+
+
+class NewEpicGamesAuthDiscard(IPatch):
+    """Clears Epic Games auth for the current launcher config path."""
+    logger = logger.getChild("NewEpicGamesAuthDiscard")
+    NAME = "newepicgames"
     TASKKILL_IMAGE = "EpicGamesLauncher.exe"
 
     remote_file_location = PureWindowsPath(r"AppData\Local\EpicGamesLauncher\Saved\Config\WindowsEditor\GameUserSettings.ini")
@@ -117,6 +138,25 @@ class WargamingAuthDiscard(IPatch):
                 await self.sftp.remove(PureWindowsPath(file))
 
 
+class ParsecAuthDiscard(IPatch):
+    """Clears Parsec auth token so the next session starts without a saved login."""
+    logger = logger.getChild("ParsecAuthDiscard")
+    NAME = "parsec"
+    TASKKILL_IMAGE = "pservice.exe"
+
+    auth_file = r"AppData\Roaming\Parsec\user.bin"
+
+    async def _patch(self, _: Path) -> None:
+        return None
+
+    async def patch(self) -> None:
+        # Kill both Parsec service and main process
+        await self.client.run(str(TaskKill(image="parsecd.exe")))
+        if await self.sftp.exists(self.auth_file):
+            self.logger.info(f"Remove file {self.auth_file}")
+            await self.sftp.remove(PureWindowsPath(self.auth_file))
+
+
 class RegistryPatch(BaseModel):
     reg_directory: str
     value_name: str
@@ -149,6 +189,7 @@ class PatchWindowsSettings(IPatch):
     )
 
     explorer_path = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer"
+    disallow_run_path = fr"{explorer_path}\DisallowRun"
     disable_poweroff = RegistryPatch(
         reg_directory=explorer_path, value_name="NoClose", value_type=RegValueType.REG_DWORD, value=1
     )
@@ -200,18 +241,18 @@ class PatchWindowsSettings(IPatch):
         "procexp.exe",
         "autoruns.exe",
         "psexplorer.exe",
-        "procexp.exe",
         "procexp64.exe",
         "procexp64a.exe",
         "soundpad.exe",
         "SoundpadService.exe",
+        "MSIAfterburner.exe",
     )
 
     def disable_application(self) -> Generator[RegistryPatch, None, None]:
         for app_index in range(len(self.blocked_applications)):
             app = self.blocked_applications[app_index]
             yield RegistryPatch(
-                reg_directory=self.explorer_path, value_name=f"{app_index}", value_type=RegValueType.REG_SZ, value=app
+                reg_directory=self.disallow_run_path, value_name=f"{app_index}", value_type=RegValueType.REG_SZ, value=app
             )
 
     def _get_patches(self):
@@ -272,5 +313,26 @@ class PatchWindowsSettings(IPatch):
         psexec_result = await self.client.run(psexec_cmd, check=False)
         self.logger.info("psexec exit_status=%r stderr=%r", psexec_result.exit_status, psexec_result.stderr)
 
+        # Launch OBS via compiled AHK script if configured.
+        # The script is expected to start OBS with the correct recording profile.
+        # Waits 15s for explorer to fully load before launching.
+        obs_script = os.environ.get(OBS_AHK_SCRIPT)
+        if obs_script:
+            await asyncio.sleep(15)
+            self.logger.info("launching OBS AHK script: %s", obs_script)
+            obs_result = await self.client.run(
+                str(PsExec(command=obs_script, interactive=session_id, user="", password="")),
+                check=False,
+            )
+            self.logger.info("OBS launch exit_status=%r stderr=%r", obs_result.exit_status, obs_result.stderr)
 
-ALL_PATCHES = (EpicGamesAuthDiscard, SteamAuthDiscard, UbisoftAuthDiscard, WargamingAuthDiscard, PatchWindowsSettings)
+
+ALL_PATCHES = (
+    OldEpicGamesAuthDiscard,
+    NewEpicGamesAuthDiscard,
+    SteamAuthDiscard,
+    UbisoftAuthDiscard,
+    WargamingAuthDiscard,
+    ParsecAuthDiscard,
+    PatchWindowsSettings,
+)
