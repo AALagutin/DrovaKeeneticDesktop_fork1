@@ -227,9 +227,9 @@ DROVA_SOCKET_LISTEN=7985
 ```ini
 # В .env только путь к конфигу:
 DROVA_CONFIG=/etc/drova/hosts.json
-SHADOW_DEFENDER_PASSWORD=DefaultSDPassword
-SHADOW_DEFENDER_DRIVES=C
 ```
+
+> `SHADOW_DEFENDER_PASSWORD` и `SHADOW_DEFENDER_DRIVES` в multi-host режиме указываются **в самом конфиге** в секции `defaults` (`shadow_defender_password` / `shadow_defender_drives`) — дублировать их в `.env` не нужно.
 
 **Формат `/etc/drova/hosts.json`:**
 
@@ -523,12 +523,12 @@ chmod +x /etc/init.d/drova_poll
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `DROVA_CONFIG` | — | **Обязательно.** Путь к `hosts.json` |
+| `DROVA_CONFIG` | — | **Обязательно.** Путь к JSON-конфигу (имя файла произвольное: `hosts.json`, `config.json` и т.д.) |
 | `DROVA_WEB_PORT` | `8080` | Порт HTTP |
 | `DROVA_WEB_USER` | `admin` | Логин для Basic Auth |
 | `DROVA_WEB_PASSWORD` | — | Пароль (если не задан — UI открыт всем!) |
-| `SHADOW_DEFENDER_PASSWORD` | — | Пароль SD (берётся из `defaults` в `hosts.json` если не задан явно) |
-| `SHADOW_DEFENDER_DRIVES` | — | Диски SD (аналогично) |
+
+> `SHADOW_DEFENDER_PASSWORD` и `SHADOW_DEFENDER_DRIVES` **не нужны** в `web.env`. `drova_web` читает их из секции `defaults` конфига (ключи `shadow_defender_password` / `shadow_defender_drives`) и автоматически передаёт дочерним воркерам.
 
 #### Создать файл окружения
 
@@ -538,11 +538,11 @@ DROVA_CONFIG=/etc/drova/hosts.json
 DROVA_WEB_PORT=8080
 DROVA_WEB_USER=admin
 DROVA_WEB_PASSWORD=your_strong_password
-SHADOW_DEFENDER_PASSWORD=sdpass
-SHADOW_DEFENDER_DRIVES=C
 EOF
 sudo chmod 600 /opt/drova-desktop/web.env
 ```
+
+> `SHADOW_DEFENDER_PASSWORD` и `SHADOW_DEFENDER_DRIVES` хранятся в конфиге под ключами `shadow_defender_password` / `shadow_defender_drives` в секции `defaults` — в `web.env` их указывать не нужно.
 
 #### Установить systemd-сервис
 
