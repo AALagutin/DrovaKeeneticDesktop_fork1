@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -33,17 +34,37 @@ class WorkerManager:
 
     def load_config(self) -> None:
         with open(self.config_path) as f:
-            self.config = json.load(f)
-        defaults = self.config.get("defaults", {})
-        self.hosts.clear()
-        for h in self.config.get("hosts", []):
+            try:
+                config = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"config.json contains invalid JSON: {e}") from e
+
+        self._validate_config(config)
+
+        defaults = config.get("defaults", {})
+        # Build new state fully before mutating self, so a parse error mid-loop
+        # does not leave self.hosts in a partial state.
+        new_hosts: dict[str, HostEntry] = {}
+        for h in config["hosts"]:
             host = h["host"]
-            self.hosts[host] = HostEntry(
+            new_hosts[host] = HostEntry(
                 host=host,
                 login=h.get("login") or defaults.get("login"),
                 password=h.get("password") or defaults.get("password"),
                 enabled=h.get("enabled", True),
             )
+
+        self.config = config
+        self.hosts.clear()
+        self.hosts.update(new_hosts)
+
+    @staticmethod
+    def _validate_config(config: dict) -> None:
+        if not isinstance(config.get("hosts"), list):
+            raise ValueError("config.json: 'hosts' must be a list")
+        for i, h in enumerate(config["hosts"]):
+            if not isinstance(h, dict) or "host" not in h:
+                raise ValueError(f"config.json: hosts[{i}] is missing required 'host' field")
 
     def save_config(self) -> None:
         defaults = self.config.get("defaults", {})
@@ -58,8 +79,23 @@ class WorkerManager:
                 h["password"] = entry.password
             hosts_list.append(h)
         self.config["hosts"] = hosts_list
-        with open(self.config_path, "w") as f:
-            json.dump(self.config, f, indent=2)
+
+        # Atomic write: write to a temp file in the same directory, then
+        # rename over the target. os.replace() is atomic on POSIX when both
+        # paths are on the same filesystem, so a crash mid-write never leaves
+        # config.json empty or truncated.
+        config_dir = os.path.dirname(os.path.abspath(self.config_path))
+        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self.config, f, indent=2)
+            os.replace(tmp_path, self.config_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     @staticmethod
     def _worker_cmd() -> list[str]:

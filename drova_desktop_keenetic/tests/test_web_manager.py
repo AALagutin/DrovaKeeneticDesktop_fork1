@@ -427,3 +427,99 @@ class TestMonitorLoop:
             await manager._monitor_loop()
 
         mock_exec.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Config resilience — idempotency against bad config.json
+# ---------------------------------------------------------------------------
+
+
+class TestConfigResilience:
+    def test_invalid_json_raises_value_error(self, tmp_path):
+        path = tmp_path / "hosts.json"
+        path.write_text("{not valid json")
+        m = WorkerManager(str(path))
+        with pytest.raises(ValueError, match="invalid JSON"):
+            m.load_config()
+
+    def test_invalid_json_does_not_mutate_hosts(self, tmp_path):
+        """self.hosts must stay untouched if the config file is invalid."""
+        good_path = tmp_path / "hosts.json"
+        good_path.write_text(json.dumps(BASE_CONFIG))
+        m = WorkerManager(str(good_path))
+        m.load_config()
+        original_hosts = set(m.hosts.keys())
+
+        bad_path = tmp_path / "bad.json"
+        bad_path.write_text("{broken")
+        m.config_path = str(bad_path)
+
+        with pytest.raises(ValueError):
+            m.load_config()
+
+        assert set(m.hosts.keys()) == original_hosts  # unchanged
+
+    def test_missing_host_field_raises(self, tmp_path):
+        path = tmp_path / "hosts.json"
+        path.write_text(json.dumps({"hosts": [{"login": "x"}]}))  # no "host" key
+        m = WorkerManager(str(path))
+        with pytest.raises(ValueError, match="missing required 'host' field"):
+            m.load_config()
+
+    def test_missing_host_field_does_not_mutate_hosts(self, tmp_path):
+        """Partial parse failure must not wipe existing hosts."""
+        good_path = tmp_path / "hosts.json"
+        good_path.write_text(json.dumps(BASE_CONFIG))
+        m = WorkerManager(str(good_path))
+        m.load_config()
+        original_hosts = set(m.hosts.keys())
+
+        bad_path = tmp_path / "partial.json"
+        bad_path.write_text(json.dumps({"hosts": [{"host": "10.0.0.1"}, {"login": "oops"}]}))
+        m.config_path = str(bad_path)
+
+        with pytest.raises(ValueError):
+            m.load_config()
+
+        assert set(m.hosts.keys()) == original_hosts
+
+    def test_hosts_not_a_list_raises(self, tmp_path):
+        path = tmp_path / "hosts.json"
+        path.write_text(json.dumps({"hosts": "not-a-list"}))
+        m = WorkerManager(str(path))
+        with pytest.raises(ValueError, match="must be a list"):
+            m.load_config()
+
+    def test_atomic_save_no_temp_file_left_on_success(self, config_file, manager):
+        """After a successful save no .tmp file should remain alongside config."""
+        import glob
+        manager.save_config()
+        tmp_files = glob.glob(config_file + "*.tmp") + glob.glob(
+            str(config_file).replace(".json", "*.tmp")
+        )
+        assert tmp_files == []
+
+    def test_save_file_is_valid_json_after_save(self, config_file, manager):
+        manager.save_config()
+        with open(config_file) as f:
+            data = json.load(f)
+        assert isinstance(data, dict)
+        assert "hosts" in data
+
+    def test_original_file_survives_simulated_write_failure(self, tmp_path):
+        """If json.dump raises, the original config.json must be intact."""
+        path = tmp_path / "hosts.json"
+        original_content = json.dumps(BASE_CONFIG, indent=2)
+        path.write_text(original_content)
+
+        m = WorkerManager(str(path))
+        m.load_config()
+
+        # Simulate json.dump blowing up (e.g. non-serialisable value injected)
+        m.config["__bad__"] = object()  # not JSON-serialisable
+
+        with pytest.raises(TypeError):
+            m.save_config()
+
+        # The original file must still be readable and correct
+        assert json.loads(path.read_text()) == BASE_CONFIG
