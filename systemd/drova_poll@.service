@@ -1,7 +1,6 @@
 [Unit]
 Description=Drova Poll Service (%i)
-Wants=network-online.target
-After=network-online.target
+After=network.target
 
 [Service]
 User=root
