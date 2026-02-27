@@ -73,6 +73,24 @@ class WorkerManager:
         for host, entry in self.hosts.items():
             if entry.enabled:
                 await self.start_worker(host)
+        asyncio.create_task(self._monitor_loop(), name="worker-monitor")
+
+    async def _monitor_loop(self) -> None:
+        """Periodically check for crashed workers and restart them."""
+        while True:
+            await asyncio.sleep(10)
+            for host, entry in list(self.hosts.items()):
+                if entry.enabled and entry.process is not None and entry.process.returncode is not None:
+                    logger.warning(
+                        "manager: worker for %s exited with code %d — restarting",
+                        host,
+                        entry.process.returncode,
+                    )
+                    await asyncio.sleep(5)
+                    try:
+                        await self.start_worker(host)
+                    except Exception:
+                        logger.exception("manager: failed to restart worker for %s", host)
 
     async def start_worker(self, host: str) -> None:
         entry = self.hosts.get(host)

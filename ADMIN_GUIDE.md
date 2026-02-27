@@ -513,7 +513,62 @@ chmod +x /etc/init.d/drova_poll
 /etc/init.d/drova_poll start
 ```
 
-### 7.4 supervisor
+### 7.4 Web-интерфейс управления хостами (drova_web)
+
+`drova_web` — отдельный сервис, который запускает воркеры как дочерние процессы и предоставляет браузерный UI для их управления.
+
+**Требования:** `DROVA_CONFIG` — путь к JSON-конфигу с несколькими хостами (см. 7.2).
+
+#### Переменные окружения
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `DROVA_CONFIG` | — | **Обязательно.** Путь к `hosts.json` |
+| `DROVA_WEB_PORT` | `8080` | Порт HTTP |
+| `DROVA_WEB_USER` | `admin` | Логин для Basic Auth |
+| `DROVA_WEB_PASSWORD` | — | Пароль (если не задан — UI открыт всем!) |
+
+#### Создать файл окружения
+
+```bash
+sudo bash -c "cat > /opt/drova-desktop/web.env" << 'EOF'
+DROVA_CONFIG=/etc/drova/hosts.json
+DROVA_WEB_PORT=8080
+DROVA_WEB_USER=admin
+DROVA_WEB_PASSWORD=your_strong_password
+SHADOW_DEFENDER_PASSWORD=sdpass
+SHADOW_DEFENDER_DRIVES=C
+EOF
+sudo chmod 600 /opt/drova-desktop/web.env
+```
+
+#### Установить systemd-сервис
+
+```bash
+sudo cp systemd/drova_web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable drova_web
+sudo systemctl start drova_web
+```
+
+#### Поведение при перезагрузке сервера
+
+- systemd останавливает сервис с `KillMode=control-group` → все дочерние воркеры тоже завершаются
+- При старте `drova_web` читает `config.json` и **автоматически запускает все хосты с `enabled: true`**
+- Хосты, остановленные через UI (кнопка «Стоп»), сохраняются в `config.json` как `"enabled": false` и **не запускаются** автоматически
+- Если воркер падает в процессе работы, `drova_web` обнаруживает это через ~10 секунд и перезапускает его
+
+#### Проверить статус
+
+```bash
+sudo systemctl status drova_web
+# Открыть UI:
+# http://<ip-сервера>:8080
+```
+
+---
+
+### 7.5 supervisor
 
 ```ini
 [program:drova_poll]

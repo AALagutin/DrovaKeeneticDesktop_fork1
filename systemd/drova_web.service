@@ -1,0 +1,16 @@
+[Unit]
+Description=Drova Web UI
+After=network.target
+
+[Service]
+User=root
+EnvironmentFile=/opt/drova-desktop/web.env
+WorkingDirectory=/opt/drova-desktop
+ExecStart=/opt/drova-desktop/.venv/bin/drova_web
+Restart=on-failure
+RestartSec=5
+# Kill the entire cgroup on stop so worker subprocesses are also terminated
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
