@@ -10,6 +10,7 @@ packages = [{include = "drova_desktop_keenetic"}]
 drova_validate = "drova_desktop_keenetic.bin.drova_validate:main"
 drova_socket = "drova_desktop_keenetic.bin.drova_socket:run_async_main"
 drova_poll = "drova_desktop_keenetic.bin.drova_poll:run_async_main"
+drova_web = "drova_desktop_keenetic.bin.drova_web:run_async_main"
 
 [tool.poetry.dependencies]
 python = "^3.11"
