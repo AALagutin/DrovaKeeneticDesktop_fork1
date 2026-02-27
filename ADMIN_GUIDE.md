@@ -51,10 +51,17 @@
 
 ### Linux-машина (воркер)
 
-- Python 3.11+
-- Poetry (менеджер зависимостей)
-- Доступ в интернет (Drova API: `services.drova.io`)
-- Сетевой доступ к Windows ПК (SSH порт 22, Drova порт 7985)
+- **ОС:** Ubuntu 22.04 LTS / 24.04 LTS (или другой Linux с Python 3.11+)
+- **Python:** 3.11 или новее (`python3.11 --version`)
+- **Poetry:** менеджер зависимостей
+- **Сеть:** исходящий доступ в интернет к `services.drova.io` (HTTPS/443)
+- **Сеть:** доступ к Windows ПК по портам **22** (SSH) и **7985** (Drova binary protocol)
+
+Проверка наличия Python 3.11 на Ubuntu:
+
+```bash
+python3.11 --version 2>/dev/null || echo "Нужна установка: sudo apt install python3.11"
+```
 
 ### Windows ПК (игровой)
 
@@ -69,7 +76,93 @@
 
 ## 3. Развёртывание
 
-### 3.1 Клонирование репозитория
+### 3.0 Развёртывание на Ubuntu (пошаговый гайд)
+
+Раздел для чистой Ubuntu 22.04 / 24.04. Если у вас другой дистрибутив — используйте разделы 3.1–3.3.
+
+#### 3.0.1 Системные зависимости
+
+```bash
+sudo apt update
+sudo apt install -y \
+    python3.11 python3.11-venv python3-pip \
+    git curl
+```
+
+Проверить версию Python:
+
+```bash
+python3.11 --version   # должно быть Python 3.11.x или выше
+```
+
+#### 3.0.2 Создание системного пользователя и директории
+
+Воркер лучше запускать от отдельного непривилегированного пользователя:
+
+```bash
+# Создать пользователя без shell-входа:
+sudo useradd -r -m -d /opt/drova -s /usr/sbin/nologin drova
+
+# Создать каталог для проекта:
+sudo mkdir -p /opt/drova/app
+sudo chown -R drova:drova /opt/drova
+```
+
+#### 3.0.3 Клонирование и установка
+
+```bash
+# Переключиться в пользователя drova:
+sudo -u drova bash
+
+# Клонировать репозиторий:
+git clone https://github.com/AALagutin/DrovaKeeneticDesktop_fork1.git /opt/drova/app
+cd /opt/drova/app
+git checkout claude/review-drova-keenetic-fork-qjpRj
+
+# Установить Poetry (в контексте пользователя drova):
+curl -sSL https://install.python-poetry.org | python3.11 -
+
+# Добавить Poetry в PATH текущей сессии:
+export PATH="/opt/drova/.local/bin:$PATH"
+
+# Установить зависимости проекта в изолированное venv:
+poetry install --without dev
+
+# Выйти из sudo -u drova
+exit
+```
+
+Путь к созданному venv:
+
+```bash
+sudo -u drova bash -c "cd /opt/drova/app && poetry env info --path"
+# Пример: /opt/drova/.cache/pypoetry/virtualenvs/drova-keenetic-desktop-xxxx/
+```
+
+#### 3.0.4 Создание файла конфигурации
+
+```bash
+# Создать защищённый файл .env (только для пользователя drova):
+sudo -u drova bash -c "cat > /opt/drova/app/.env" << 'EOF'
+WINDOWS_HOST=192.168.1.100
+WINDOWS_LOGIN=Administrator
+WINDOWS_PASSWORD=YourWindowsPassword
+SHADOW_DEFENDER_PASSWORD=YourSDPassword
+SHADOW_DEFENDER_DRIVES=C
+EOF
+
+sudo chmod 600 /opt/drova/app/.env
+```
+
+#### 3.0.5 Проверка установки
+
+```bash
+sudo -u drova bash -c "cd /opt/drova/app && poetry run drova_validate"
+```
+
+---
+
+### 3.1 Клонирование репозитория (общий случай)
 
 ```bash
 git clone https://github.com/AALagutin/DrovaKeeneticDesktop_fork1.git
@@ -280,15 +373,27 @@ run_async_main()
 
 ## 7. Автозапуск
 
-### 7.1 systemd (рекомендуется для Linux)
+### 7.1 systemd на Ubuntu (рекомендуется)
 
-Создать unit-файл:
+#### Узнать путь к исполняемому файлу drova_poll
+
+После установки через Poetry путь зависит от venv. Получить его:
+
+```bash
+sudo -u drova bash -c "cd /opt/drova/app && poetry run which drova_poll"
+# Пример вывода:
+# /opt/drova/.cache/pypoetry/virtualenvs/drova-keenetic-desktop-AbCdEf-py3.11/bin/drova_poll
+```
+
+Запомните этот путь — он нужен в unit-файле.
+
+#### Создать unit-файл
 
 ```bash
 sudo nano /etc/systemd/system/drova-poll.service
 ```
 
-**Содержимое:**
+**Содержимое** (подставьте реальный путь к `drova_poll`):
 
 ```ini
 [Unit]
@@ -300,49 +405,83 @@ Wants=network-online.target
 Type=simple
 User=drova
 Group=drova
-WorkingDirectory=/opt/drova/DrovaKeeneticDesktop_fork1
-ExecStart=/opt/drova/.venv/bin/drova_poll
+WorkingDirectory=/opt/drova/app
+
+# Путь к исполняемому файлу из venv Poetry:
+ExecStart=/opt/drova/.cache/pypoetry/virtualenvs/drova-keenetic-desktop-AbCdEf-py3.11/bin/drova_poll
+
 Restart=always
 RestartSec=10
+
+# Логи идут в journald (просмотр: journalctl -u drova-poll -f)
 StandardOutput=journal
 StandardError=journal
 
-# Переменные окружения (альтернатива .env):
+# Опционально: вместо .env-файла в проекте — указать внешний файл:
 # EnvironmentFile=/etc/drova/drova.env
-# Environment=WINDOWS_HOST=192.168.1.100
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**Применение:**
+> **Совет:** Чтобы не зависеть от хеша venv, можно вместо прямого пути использовать враппер:
+>
+> ```bash
+> sudo -u drova bash -c "cat > /opt/drova/run_poll.sh" << 'EOF'
+> #!/bin/bash
+> cd /opt/drova/app
+> exec poetry run drova_poll
+> EOF
+> sudo chmod +x /opt/drova/run_poll.sh
+> ```
+>
+> И в unit-файле: `ExecStart=/opt/drova/run_poll.sh`
+
+#### Применение и управление
 
 ```bash
+# Применить unit-файл:
 sudo systemctl daemon-reload
-sudo systemctl enable drova-poll
-sudo systemctl start drova-poll
+sudo systemctl enable drova-poll    # автозапуск при загрузке
+sudo systemctl start drova-poll     # запустить сейчас
+
+# Управление:
+sudo systemctl status drova-poll    # статус (PID, uptime, последние строки лога)
+sudo systemctl restart drova-poll   # перезапуск
+sudo systemctl stop drova-poll      # остановка
+
+# Логи:
+sudo journalctl -u drova-poll -f                    # в реальном времени
+sudo journalctl -u drova-poll --since "1 hour ago"  # за последний час
+sudo journalctl -u drova-poll --since today         # за сегодня
+sudo journalctl -u drova-poll -n 100                # последние 100 строк
 ```
 
-**Управление:**
+### 7.2 Multi-host через systemd на Ubuntu
+
+Для нескольких ПК — один воркер с `DROVA_CONFIG`. Разместить конфиг:
 
 ```bash
-sudo systemctl status drova-poll      # статус
-sudo systemctl restart drova-poll     # перезапуск
-sudo systemctl stop drova-poll        # остановка
-sudo journalctl -u drova-poll -f      # логи в реальном времени
-sudo journalctl -u drova-poll --since "1 hour ago"  # логи за час
+sudo mkdir -p /etc/drova
+sudo -u drova bash -c "cat > /etc/drova/hosts.json" << 'EOF'
+{
+  "defaults": { "login": "Administrator", "password": "pass",
+                "shadow_defender_password": "sdpass", "shadow_defender_drives": "C" },
+  "hosts": [
+    { "host": "192.168.1.100" },
+    { "host": "192.168.1.101" }
+  ]
+}
+EOF
+sudo chmod 640 /etc/drova/hosts.json
 ```
 
-### 7.2 Multi-host через systemd (несколько воркеров)
-
-Для нескольких ПК лучше использовать один воркер с `DROVA_CONFIG`:
+В unit-файле добавить:
 
 ```ini
 [Service]
 Environment=DROVA_CONFIG=/etc/drova/hosts.json
 ```
-
-Или создать отдельные unit-файлы `drova-poll@.service` с шаблоном.
 
 ### 7.3 Автозапуск на OpenWRT / Keenetic (init.d)
 
