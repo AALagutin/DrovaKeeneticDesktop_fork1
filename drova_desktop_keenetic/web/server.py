@@ -9,6 +9,8 @@ from drova_desktop_keenetic.web.manager import WorkerManager
 
 logger = logging.getLogger(__name__)
 
+_MANAGER_KEY: web.AppKey["WorkerManager"] = web.AppKey("manager")
+
 _HTML = """\
 <!DOCTYPE html>
 <html lang="ru">
@@ -206,12 +208,12 @@ async def _handle_index(request: web.Request) -> web.Response:
 
 
 async def _handle_get_hosts(request: web.Request) -> web.Response:
-    manager: WorkerManager = request.app["manager"]
+    manager: WorkerManager = request.app[_MANAGER_KEY]
     return web.json_response(manager.get_status())
 
 
 async def _handle_start(request: web.Request) -> web.Response:
-    manager: WorkerManager = request.app["manager"]
+    manager: WorkerManager = request.app[_MANAGER_KEY]
     host = request.match_info["host"]
     try:
         await manager.start_worker(host)
@@ -221,7 +223,7 @@ async def _handle_start(request: web.Request) -> web.Response:
 
 
 async def _handle_stop(request: web.Request) -> web.Response:
-    manager: WorkerManager = request.app["manager"]
+    manager: WorkerManager = request.app[_MANAGER_KEY]
     host = request.match_info["host"]
     try:
         await manager.stop_worker(host)
@@ -231,7 +233,7 @@ async def _handle_stop(request: web.Request) -> web.Response:
 
 
 async def _handle_add_host(request: web.Request) -> web.Response:
-    manager: WorkerManager = request.app["manager"]
+    manager: WorkerManager = request.app[_MANAGER_KEY]
     try:
         data = await request.json()
     except json.JSONDecodeError:
@@ -251,7 +253,7 @@ async def _handle_add_host(request: web.Request) -> web.Response:
 
 
 async def _handle_remove_host(request: web.Request) -> web.Response:
-    manager: WorkerManager = request.app["manager"]
+    manager: WorkerManager = request.app[_MANAGER_KEY]
     host = request.match_info["host"]
     try:
         await manager.remove_host(host)
@@ -262,7 +264,7 @@ async def _handle_remove_host(request: web.Request) -> web.Response:
 
 def create_app(manager: WorkerManager, user: str, password: str) -> web.Application:
     app = web.Application(middlewares=[_make_auth_middleware(user, password)])
-    app["manager"] = manager
+    app[_MANAGER_KEY] = manager
     app.router.add_get("/", _handle_index)
     app.router.add_get("/api/hosts", _handle_get_hosts)
     app.router.add_post("/api/hosts/{host}/start", _handle_start)
